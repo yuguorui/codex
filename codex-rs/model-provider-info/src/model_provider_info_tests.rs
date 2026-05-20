@@ -22,7 +22,10 @@ base_url = "http://localhost:11434/v1"
         wire_api: WireApi::Responses,
         query_params: None,
         http_headers: None,
+        extra_headers: None,
         env_http_headers: None,
+        env_extra_headers: None,
+        extra_body: None,
         request_max_retries: None,
         stream_max_retries: None,
         stream_idle_timeout_ms: None,
@@ -57,7 +60,10 @@ query_params = { api-version = "2025-04-01-preview" }
             "api-version".to_string() => "2025-04-01-preview".to_string(),
         }),
         http_headers: None,
+        extra_headers: None,
         env_http_headers: None,
+        env_extra_headers: None,
+        extra_body: None,
         request_max_retries: None,
         stream_max_retries: None,
         stream_idle_timeout_ms: None,
@@ -94,9 +100,12 @@ supports_standalone_web_search = true
         http_headers: Some(maplit::hashmap! {
             "X-Example-Header".to_string() => "example-value".to_string(),
         }),
+        extra_headers: None,
         env_http_headers: Some(maplit::hashmap! {
             "X-Example-Env-Header".to_string() => "EXAMPLE_ENV_VAR".to_string(),
         }),
+        env_extra_headers: None,
+        extra_body: None,
         request_max_retries: None,
         stream_max_retries: None,
         stream_idle_timeout_ms: None,
@@ -111,7 +120,7 @@ supports_standalone_web_search = true
 }
 
 #[test]
-fn test_deserialize_chat_wire_api_shows_helpful_error() {
+fn test_deserialize_chat_wire_api() {
     let provider_toml = r#"
 name = "OpenAI using Chat Completions"
 base_url = "https://api.openai.com/v1"
@@ -119,8 +128,82 @@ env_key = "OPENAI_API_KEY"
 wire_api = "chat"
         "#;
 
-    let err = toml::from_str::<ModelProviderInfo>(provider_toml).unwrap_err();
-    assert!(err.to_string().contains(CHAT_WIRE_API_REMOVED_ERROR));
+    let provider: ModelProviderInfo = toml::from_str(provider_toml).unwrap();
+    assert_eq!(provider.wire_api, WireApi::Chat);
+}
+
+#[test]
+fn test_deserialize_extra_headers_and_extra_body() {
+    let provider_toml = r#"
+name = "DashScope"
+base_url = "https://dashscope.aliyuncs.com/compatible-mode/v1"
+wire_api = "chat"
+requires_openai_auth = false
+extra_headers = { "X-DashScope-DataInspection" = '{"input":"cip","output":"cip"}' }
+env_extra_headers = { "X-Custom-Token" = "CUSTOM_TOKEN_ENV" }
+extra_body = { enable_thinking = true, thinking_budget = 1024 }
+        "#;
+
+    let provider: ModelProviderInfo = toml::from_str(provider_toml).unwrap();
+
+    assert_eq!(
+        provider.extra_headers,
+        Some(maplit::hashmap! {
+            "X-DashScope-DataInspection".to_string() =>
+                r#"{"input":"cip","output":"cip"}"#.to_string(),
+        })
+    );
+    assert_eq!(
+        provider.env_extra_headers,
+        Some(maplit::hashmap! {
+            "X-Custom-Token".to_string() => "CUSTOM_TOKEN_ENV".to_string(),
+        })
+    );
+    assert_eq!(
+        provider.extra_body,
+        Some(maplit::hashmap! {
+            "enable_thinking".to_string() => serde_json::json!(true),
+            "thinking_budget".to_string() => serde_json::json!(1024),
+        })
+    );
+}
+
+#[test]
+fn test_extra_headers_are_injected_into_api_provider() {
+    unsafe {
+        std::env::set_var("CODEX_TEST_CUSTOM_TOKEN_ENV", "secret-token");
+    }
+    let provider = ModelProviderInfo {
+        extra_headers: Some(maplit::hashmap! {
+            "X-Static".to_string() => "static-value".to_string(),
+        }),
+        env_extra_headers: Some(maplit::hashmap! {
+            "X-Env".to_string() => "CODEX_TEST_CUSTOM_TOKEN_ENV".to_string(),
+        }),
+        ..ModelProviderInfo::default()
+    };
+
+    let api_provider = provider
+        .to_api_provider(/*auth_mode*/ None)
+        .expect("provider should build");
+
+    assert_eq!(
+        api_provider
+            .headers
+            .get("X-Static")
+            .and_then(|value| value.to_str().ok()),
+        Some("static-value")
+    );
+    assert_eq!(
+        api_provider
+            .headers
+            .get("X-Env")
+            .and_then(|value| value.to_str().ok()),
+        Some("secret-token")
+    );
+    unsafe {
+        std::env::remove_var("CODEX_TEST_CUSTOM_TOKEN_ENV");
+    }
 }
 
 #[test]
@@ -174,7 +257,10 @@ fn test_supports_remote_compaction_for_azure_name() {
         wire_api: WireApi::Responses,
         query_params: None,
         http_headers: None,
+        extra_headers: None,
         env_http_headers: None,
+        env_extra_headers: None,
+        extra_body: None,
         request_max_retries: None,
         stream_max_retries: None,
         stream_idle_timeout_ms: None,
@@ -185,6 +271,16 @@ fn test_supports_remote_compaction_for_azure_name() {
     };
 
     assert!(provider.supports_remote_compaction());
+}
+
+#[test]
+fn test_chat_provider_does_not_support_responses_remote_compaction() {
+    let provider = ModelProviderInfo {
+        wire_api: WireApi::Chat,
+        ..ModelProviderInfo::create_openai_provider(/*base_url*/ None)
+    };
+
+    assert!(!provider.supports_remote_compaction());
 }
 
 #[test]
@@ -200,7 +296,10 @@ fn test_supports_remote_compaction_for_non_openai_non_azure_provider() {
         wire_api: WireApi::Responses,
         query_params: None,
         http_headers: None,
+        extra_headers: None,
         env_http_headers: None,
+        env_extra_headers: None,
+        extra_body: None,
         request_max_retries: None,
         stream_max_retries: None,
         stream_idle_timeout_ms: None,
@@ -309,7 +408,10 @@ fn test_create_amazon_bedrock_provider() {
                 AMAZON_BEDROCK_MANTLE_CLIENT_AGENT_HEADER.to_string() =>
                     AMAZON_BEDROCK_MANTLE_CLIENT_AGENT_VALUE.to_string(),
             }),
+            extra_headers: None,
             env_http_headers: None,
+            env_extra_headers: None,
+            extra_body: None,
             request_max_retries: None,
             stream_max_retries: None,
             stream_idle_timeout_ms: None,

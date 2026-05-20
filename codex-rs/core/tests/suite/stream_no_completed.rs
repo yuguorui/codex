@@ -56,7 +56,10 @@ async fn retries_on_early_close() {
         wire_api: WireApi::Responses,
         query_params: None,
         http_headers: None,
+        extra_headers: None,
         env_http_headers: None,
+        env_extra_headers: None,
+        extra_body: None,
         // exercise retry path: first attempt yields incomplete stream, so allow 1 retry
         request_max_retries: Some(0),
         stream_max_retries: Some(1),
