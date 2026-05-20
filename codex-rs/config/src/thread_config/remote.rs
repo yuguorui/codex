@@ -160,6 +160,7 @@ fn model_provider_from_proto(
     let id = provider.id;
     let wire_api = match proto::WireApi::try_from(provider.wire_api) {
         Ok(proto::WireApi::Responses) => WireApi::Responses,
+        Ok(proto::WireApi::Chat) => WireApi::Chat,
         Ok(proto::WireApi::Unspecified) => {
             return Err(parse_error("remote thread config omitted wire_api"));
         }
@@ -184,7 +185,19 @@ fn model_provider_from_proto(
         wire_api,
         query_params: provider.query_params.map(redacted_string_map),
         http_headers: provider.http_headers.map(redacted_string_map),
+        extra_headers: provider.extra_headers.map(redacted_string_map),
         env_http_headers: provider.env_http_headers.map(|map| map.values),
+        env_extra_headers: provider.env_extra_headers.map(|map| map.values),
+        extra_body: provider
+            .extra_body_json
+            .map(|value| {
+                serde_json::from_str(&value).map_err(|err| {
+                    parse_error(format!(
+                        "remote thread config returned invalid extra_body_json: {err}"
+                    ))
+                })
+            })
+            .transpose()?,
         request_max_retries: provider.request_max_retries,
         stream_max_retries: provider.stream_max_retries,
         stream_idle_timeout_ms: provider.stream_idle_timeout_ms,
@@ -212,7 +225,10 @@ fn model_provider_to_proto(
         wire_api,
         query_params,
         http_headers,
+        extra_headers,
         env_http_headers,
+        env_extra_headers,
+        extra_body,
         request_max_retries,
         stream_max_retries,
         stream_idle_timeout_ms,
@@ -234,6 +250,11 @@ fn model_provider_to_proto(
         query_params: query_params.map(proto_string_map),
         http_headers: http_headers.map(proto_string_map),
         env_http_headers: env_http_headers.map(|values| proto::StringMap { values }),
+        extra_headers: extra_headers.map(proto_string_map),
+        env_extra_headers: env_extra_headers.map(|values| proto::StringMap { values }),
+        extra_body_json: extra_body.map(|value| {
+            serde_json::to_string(&value).expect("extra_body should serialize as JSON")
+        }),
         request_max_retries,
         stream_max_retries,
         stream_idle_timeout_ms,
@@ -305,6 +326,7 @@ fn proto_string_map(values: HashMap<String, RedactedString>) -> proto::StringMap
 fn proto_wire_api(wire_api: WireApi) -> proto::WireApi {
     match wire_api {
         WireApi::Responses => proto::WireApi::Responses,
+        WireApi::Chat => proto::WireApi::Chat,
     }
 }
 
@@ -494,12 +516,31 @@ mod tests {
                                     "enabled".to_string(),
                                 )]),
                             }),
+                            extra_headers: Some(proto::StringMap {
+                                values: HashMap::from([(
+                                    "X-Extra".to_string(),
+                                    "extra-enabled".to_string(),
+                                )]),
+                            }),
                             env_http_headers: Some(proto::StringMap {
                                 values: HashMap::from([(
                                     "X-Env".to_string(),
                                     "LOCAL_HEADER".to_string(),
                                 )]),
                             }),
+                            env_extra_headers: Some(proto::StringMap {
+                                values: HashMap::from([(
+                                    "X-Env-Extra".to_string(),
+                                    "LOCAL_EXTRA_HEADER".to_string(),
+                                )]),
+                            }),
+                            extra_body_json: Some(
+                                serde_json::json!({
+                                    "enable_thinking": true,
+                                    "thinking_budget": 1024
+                                })
+                                .to_string(),
+                            ),
                             request_max_retries: Some(7),
                             stream_max_retries: Some(8),
                             stream_idle_timeout_ms: Some(9_000),
@@ -561,6 +602,18 @@ mod tests {
                 "X-Env".to_string(),
                 "LOCAL_HEADER".to_string(),
             )])),
+            extra_headers: Some(HashMap::from([(
+                "X-Extra".to_string(),
+                "extra-enabled".into(),
+            )])),
+            env_extra_headers: Some(HashMap::from([(
+                "X-Env-Extra".to_string(),
+                "LOCAL_EXTRA_HEADER".to_string(),
+            )])),
+            extra_body: Some(HashMap::from([
+                ("enable_thinking".to_string(), serde_json::json!(true)),
+                ("thinking_budget".to_string(), serde_json::json!(1024)),
+            ])),
             request_max_retries: Some(7),
             stream_max_retries: Some(8),
             stream_idle_timeout_ms: Some(9_000),
