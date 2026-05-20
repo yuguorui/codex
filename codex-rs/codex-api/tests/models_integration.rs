@@ -14,6 +14,7 @@ use codex_protocol::openai_models::TruncationPolicyConfig;
 use codex_protocol::openai_models::default_input_modalities;
 use http::HeaderMap;
 use http::Method;
+use std::collections::HashMap;
 use std::sync::Arc;
 use wiremock::Mock;
 use wiremock::MockServer;
@@ -34,6 +35,7 @@ fn provider(base_url: &str) -> Provider {
         base_url: base_url.to_string(),
         query_params: None,
         headers: HeaderMap::new(),
+        extra_body: HashMap::new(),
         retry: RetryConfig {
             max_attempts: 1,
             base_delay: std::time::Duration::from_millis(1),
