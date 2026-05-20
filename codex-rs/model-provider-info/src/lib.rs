@@ -47,7 +47,6 @@ pub const AMAZON_BEDROCK_DEFAULT_BASE_URL: &str =
     "https://bedrock-mantle.us-east-1.api.aws/openai/v1";
 const AMAZON_BEDROCK_MANTLE_CLIENT_AGENT_HEADER: &str = "x-amzn-mantle-client-agent";
 const AMAZON_BEDROCK_MANTLE_CLIENT_AGENT_VALUE: &str = "codex";
-const CHAT_WIRE_API_REMOVED_ERROR: &str = "`wire_api = \"chat\"` is no longer supported.\nHow to fix: set `wire_api = \"responses\"` in your provider config.\nMore info: https://github.com/openai/codex/discussions/7782";
 pub const LEGACY_OLLAMA_CHAT_PROVIDER_ID: &str = "ollama-chat";
 pub const OLLAMA_CHAT_PROVIDER_REMOVED_ERROR: &str = "`ollama-chat` is no longer supported.\nHow to fix: replace `ollama-chat` with `ollama` in `model_provider`, `oss_provider`, or `--local-provider`.\nMore info: https://github.com/openai/codex/discussions/7782";
 
@@ -58,12 +57,15 @@ pub enum WireApi {
     /// The Responses API exposed by OpenAI at `/v1/responses`.
     #[default]
     Responses,
+    /// The OpenAI Chat Completions API exposed at `/v1/chat/completions`.
+    Chat,
 }
 
 impl fmt::Display for WireApi {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let value = match self {
             Self::Responses => "responses",
+            Self::Chat => "chat",
         };
         f.write_str(value)
     }
@@ -77,8 +79,11 @@ impl<'de> Deserialize<'de> for WireApi {
         let value = String::deserialize(deserializer)?;
         match value.as_str() {
             "responses" => Ok(Self::Responses),
-            "chat" => Err(serde::de::Error::custom(CHAT_WIRE_API_REMOVED_ERROR)),
-            _ => Err(serde::de::Error::unknown_variant(&value, &["responses"])),
+            "chat" => Ok(Self::Chat),
+            _ => Err(serde::de::Error::unknown_variant(
+                &value,
+                &["responses", "chat"],
+            )),
         }
     }
 }
@@ -114,11 +119,17 @@ pub struct ModelProviderInfo {
     /// Additional HTTP headers to include in requests to this provider where
     /// the (key, value) pairs are the header name and value.
     pub http_headers: Option<HashMap<String, String>>,
+    /// Alias for `http_headers`, retained for OpenAI-compatible provider docs.
+    pub extra_headers: Option<HashMap<String, String>>,
     /// Optional HTTP headers to include in requests to this provider where the
     /// (key, value) pairs are the header name and _environment variable_ whose
     /// value should be used. If the environment variable is not set, or the
     /// value is empty, the header will not be included in the request.
     pub env_http_headers: Option<HashMap<String, String>>,
+    /// Alias for `env_http_headers`, retained for OpenAI-compatible provider docs.
+    pub env_extra_headers: Option<HashMap<String, String>>,
+    /// Extra JSON object fields to merge into the provider request body.
+    pub extra_body: Option<HashMap<String, serde_json::Value>>,
     /// Maximum number of times to retry a failed HTTP request to this provider.
     pub request_max_retries: Option<u64>,
     /// Number of times to retry reconnecting a dropped streaming response before failing.
@@ -216,9 +227,14 @@ impl ModelProviderInfo {
 
     fn build_header_map(&self) -> CodexResult<HeaderMap> {
         let capacity = self.http_headers.as_ref().map_or(0, HashMap::len)
-            + self.env_http_headers.as_ref().map_or(0, HashMap::len);
+            + self.extra_headers.as_ref().map_or(0, HashMap::len)
+            + self.env_http_headers.as_ref().map_or(0, HashMap::len)
+            + self.env_extra_headers.as_ref().map_or(0, HashMap::len);
         let mut headers = HeaderMap::with_capacity(capacity);
-        if let Some(extra) = &self.http_headers {
+        for extra in [&self.http_headers, &self.extra_headers]
+            .into_iter()
+            .flatten()
+        {
             for (k, v) in extra {
                 if let (Ok(name), Ok(value)) = (HeaderName::try_from(k), HeaderValue::try_from(v)) {
                     headers.insert(name, value);
@@ -226,7 +242,10 @@ impl ModelProviderInfo {
             }
         }
 
-        if let Some(env_headers) = &self.env_http_headers {
+        for env_headers in [&self.env_http_headers, &self.env_extra_headers]
+            .into_iter()
+            .flatten()
+        {
             for (header, env_var) in env_headers {
                 if let Ok(val) = std::env::var(env_var)
                     && !val.trim().is_empty()
@@ -275,6 +294,7 @@ impl ModelProviderInfo {
             base_url,
             query_params: self.query_params.clone(),
             headers,
+            extra_body: self.extra_body.clone().unwrap_or_default(),
             retry,
             stream_idle_timeout: self.stream_idle_timeout(),
         })
@@ -345,6 +365,7 @@ impl ModelProviderInfo {
                     .into_iter()
                     .collect(),
             ),
+            extra_headers: None,
             env_http_headers: Some(
                 [
                     (
@@ -356,6 +377,8 @@ impl ModelProviderInfo {
                 .into_iter()
                 .collect(),
             ),
+            env_extra_headers: None,
+            extra_body: None,
             // Use global defaults for retry/timeout unless overridden in config.toml.
             request_max_retries: None,
             stream_max_retries: None,
@@ -390,7 +413,10 @@ impl ModelProviderInfo {
                 AMAZON_BEDROCK_MANTLE_CLIENT_AGENT_HEADER.to_string(),
                 AMAZON_BEDROCK_MANTLE_CLIENT_AGENT_VALUE.to_string(),
             )])),
+            extra_headers: None,
             env_http_headers: None,
+            env_extra_headers: None,
+            extra_body: None,
             request_max_retries: None,
             stream_max_retries: None,
             stream_idle_timeout_ms: None,
@@ -420,7 +446,9 @@ impl ModelProviderInfo {
     }
 
     pub fn supports_remote_compaction(&self) -> bool {
-        self.is_openai() || is_azure_responses_provider(&self.name, self.base_url.as_deref())
+        self.wire_api == WireApi::Responses
+            && (self.is_openai()
+                || is_azure_responses_provider(&self.name, self.base_url.as_deref()))
     }
 
     pub fn has_command_auth(&self) -> bool {
@@ -538,7 +566,10 @@ pub fn create_oss_provider_with_base_url(base_url: &str, wire_api: WireApi) -> M
         wire_api,
         query_params: None,
         http_headers: None,
+        extra_headers: None,
         env_http_headers: None,
+        env_extra_headers: None,
+        extra_body: None,
         request_max_retries: None,
         stream_max_retries: None,
         stream_idle_timeout_ms: None,
