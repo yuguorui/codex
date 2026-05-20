@@ -45,6 +45,7 @@ pub struct Provider {
     pub base_url: String,
     pub query_params: Option<HashMap<String, String>>,
     pub headers: HeaderMap,
+    pub extra_body: HashMap<String, serde_json::Value>,
     pub retry: RetryConfig,
     pub stream_idle_timeout: Duration,
 }
