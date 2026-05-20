@@ -11,6 +11,7 @@ use codex_api::is_azure_responses_provider;
 use codex_login::AuthManager;
 use codex_login::CodexAuth;
 use codex_model_provider_info::ModelProviderInfo;
+use codex_model_provider_info::WireApi;
 use codex_models_manager::cache::ModelsCache;
 use codex_models_manager::manager::OpenAiModelsManager;
 use codex_models_manager::manager::SharedModelsManager;
@@ -297,8 +298,11 @@ impl ModelProvider for ConfiguredModelProvider {
     }
 
     fn capabilities(&self) -> ProviderCapabilities {
-        let remote_compaction = if self.info.is_openai()
-            || is_azure_responses_provider(&self.info.name, self.info.base_url.as_deref())
+        // Only Responses-wire providers support remote compaction; custom wire
+        // APIs (e.g. Chat Completions, Anthropic Messages) compact locally.
+        let remote_compaction = if self.info.wire_api == WireApi::Responses
+            && (self.info.is_openai()
+                || is_azure_responses_provider(&self.info.name, self.info.base_url.as_deref()))
         {
             RemoteCompactionSupport::V2
         } else {
@@ -616,6 +620,13 @@ mod tests {
             ),
             (
                 provider_for("https://example.test/v1".to_string()),
+                RemoteCompactionSupport::Unsupported,
+            ),
+            (
+                ModelProviderInfo {
+                    wire_api: WireApi::Chat,
+                    ..ModelProviderInfo::create_openai_provider(/*base_url*/ None)
+                },
                 RemoteCompactionSupport::Unsupported,
             ),
         ];
