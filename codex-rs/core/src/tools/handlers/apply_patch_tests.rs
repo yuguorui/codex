@@ -63,6 +63,70 @@ async fn pre_tool_use_payload_uses_freeform_patch_input() {
 }
 
 #[tokio::test]
+async fn pre_tool_use_payload_accepts_function_wrapped_custom_input() {
+    let patch = sample_patch();
+    let payload = ToolPayload::Function {
+        arguments: json!({ "input": patch }).to_string(),
+    };
+    let invocation = invocation_for_payload(payload).await;
+    let handler = ApplyPatchHandler::default();
+
+    assert_eq!(
+        handler.pre_tool_use_payload(&invocation),
+        Some(PreToolUsePayload {
+            tool_name: HookToolName::apply_patch(),
+            tool_input: json!({ "command": patch }),
+        })
+    );
+}
+
+#[tokio::test]
+async fn with_updated_hook_input_updates_function_wrapped_custom_input() {
+    let original_patch = sample_patch();
+    let updated_patch = r#"*** Begin Patch
+*** Add File: goodbye.txt
++goodbye
+*** End Patch"#;
+    let payload = ToolPayload::Function {
+        arguments: json!({ "input": original_patch }).to_string(),
+    };
+    let invocation = invocation_for_payload(payload).await;
+    let handler = ApplyPatchHandler::default();
+
+    let updated = handler
+        .with_updated_hook_input(invocation, json!({ "command": updated_patch }))
+        .expect("hook input should update");
+
+    let ToolPayload::Function { arguments } = updated.payload else {
+        panic!("expected function payload");
+    };
+    assert_eq!(arguments, json!({ "input": updated_patch }).to_string());
+}
+
+#[tokio::test]
+async fn with_updated_hook_input_preserves_raw_function_input() {
+    let original_patch = sample_patch();
+    let updated_patch = r#"*** Begin Patch
+*** Add File: goodbye.txt
++goodbye
+*** End Patch"#;
+    let payload = ToolPayload::Function {
+        arguments: original_patch.to_string(),
+    };
+    let invocation = invocation_for_payload(payload).await;
+    let handler = ApplyPatchHandler::default();
+
+    let updated = handler
+        .with_updated_hook_input(invocation, json!({ "command": updated_patch }))
+        .expect("hook input should update");
+
+    let ToolPayload::Function { arguments } = updated.payload else {
+        panic!("expected function payload");
+    };
+    assert_eq!(arguments, updated_patch);
+}
+
+#[tokio::test]
 async fn post_tool_use_payload_uses_patch_input_and_tool_output() {
     let patch = sample_patch();
     let payload = ToolPayload::Custom {
