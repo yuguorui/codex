@@ -49,6 +49,11 @@ message ModelProvider {
   bool requires_openai_auth = 16;
   bool supports_websockets = 17;
   bool supports_standalone_web_search = 18;
+  optional StringMap extra_headers = 19;
+  optional StringMap env_extra_headers = 20;
+  optional string extra_body_json = 21;
+  optional string env_key_auth = 22;
+  optional uint64 request_max_retry_delay_ms = 23;
 }
 
 message StringMap {
@@ -66,4 +71,6 @@ message ModelProviderAuthInfo {
 enum WireApi {
   WIRE_API_UNSPECIFIED = 0;
   WIRE_API_RESPONSES = 1;
+  WIRE_API_CHAT = 2;
+  WIRE_API_ANTHROPIC = 3;
 }
