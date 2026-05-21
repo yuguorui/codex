@@ -1436,6 +1436,7 @@ async fn send_provider_auth_request(server: &MockServer, auth: ModelProviderAuth
         name: "corp".into(),
         base_url: Some(format!("{}/v1", server.uri())),
         env_key: None,
+        env_key_auth: None,
         env_key_instructions: None,
         experimental_bearer_token: None,
         auth: Some(auth),
@@ -3176,6 +3177,7 @@ async fn azure_responses_request_includes_store_and_prefixed_item_ids() {
         name: "azure".into(),
         base_url: Some(format!("{}/openai", server.uri())),
         env_key: None,
+        env_key_auth: None,
         env_key_instructions: None,
         experimental_bearer_token: None,
         auth: None,
@@ -3831,6 +3833,7 @@ async fn azure_overrides_assign_properties_used_for_responses_url() {
         base_url: Some(format!("{}/openai", server.uri())),
         // Reuse the existing environment variable to avoid using unsafe code
         env_key: Some(EXISTING_ENV_VAR_WITH_NON_EMPTY_VALUE.to_string()),
+        env_key_auth: None,
         experimental_bearer_token: None,
         auth: None,
         aws: None,
@@ -3924,6 +3927,7 @@ async fn env_var_overrides_loaded_auth() {
         base_url: Some(format!("{}/openai", server.uri())),
         // Reuse the existing environment variable to avoid using unsafe code
         env_key: Some(EXISTING_ENV_VAR_WITH_NON_EMPTY_VALUE.to_string()),
+        env_key_auth: None,
         query_params: Some(std::collections::HashMap::from([(
             "api-version".to_string(),
             "2025-04-01-preview".to_string(),
