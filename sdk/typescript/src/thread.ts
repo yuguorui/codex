@@ -105,6 +105,7 @@ export class Thread {
           this._id = parsed.thread_id;
         } else if (parsed.type === "turn.completed") {
           parsed.usage.cache_write_input_tokens ??= 0;
+          parsed.usage.cache_creation_input_tokens ??= 0;
         }
         yield parsed;
       }

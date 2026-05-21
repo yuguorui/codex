@@ -25,6 +25,8 @@ export type Usage = {
   cached_input_tokens: number;
   /** The number of input tokens written to the prompt cache during the turn. */
   cache_write_input_tokens: number;
+  /** The number of cache creation input tokens used during the turn. */
+  cache_creation_input_tokens: number;
   /** The number of output tokens used during the turn. */
   output_tokens: number;
   /** The number of reasoning output tokens used during the turn. */

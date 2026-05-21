@@ -37,6 +37,7 @@ describe("Codex", () => {
       ];
       expect(result.items).toEqual(expectedItems);
       expect(result.usage).toEqual({
+        cache_creation_input_tokens: 0,
         cache_write_input_tokens: 0,
         cached_input_tokens: 12,
         input_tokens: 42,

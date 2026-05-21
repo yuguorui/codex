@@ -513,6 +513,7 @@ mod tests {
             name: "mock".into(),
             base_url: Some(base_url),
             env_key: None,
+            env_key_auth: None,
             env_key_instructions: None,
             experimental_bearer_token: None,
             auth: None,
