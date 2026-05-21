@@ -13,7 +13,9 @@ use codex_login::CodexAuth;
 use codex_login::auth::AgentIdentityAuth;
 use codex_login::auth::AgentIdentityAuthError;
 use codex_login::auth::AgentIdentityAuthPolicy;
+use codex_model_provider_info::EnvKeyAuthScheme;
 use codex_model_provider_info::ModelProviderInfo;
+use codex_model_provider_info::WireApi;
 use codex_protocol::error::CodexErr;
 use codex_protocol::protocol::SessionSource;
 use http::HeaderMap;
@@ -163,6 +165,19 @@ pub fn unauthenticated_auth_provider() -> SharedAuthProvider {
     Arc::new(UnauthenticatedAuthProvider)
 }
 
+#[derive(Clone, Debug)]
+struct AnthropicApiKeyAuthProvider {
+    api_key: String,
+}
+
+impl AuthProvider for AnthropicApiKeyAuthProvider {
+    fn add_auth_headers(&self, headers: &mut HeaderMap) {
+        if let Ok(header) = HeaderValue::from_str(&self.api_key) {
+            let _ = headers.insert("x-api-key", header);
+        }
+    }
+}
+
 /// Returns the provider-scoped auth manager when this provider uses command-backed auth.
 ///
 /// Providers without custom auth continue using the caller-supplied base manager, when present.
@@ -184,6 +199,10 @@ pub(crate) fn resolve_provider_auth(
         return Err(CodexErr::UnsupportedOperation(
             BEDROCK_API_KEY_UNSUPPORTED_MESSAGE.to_string(),
         ));
+    }
+
+    if let Some(api_key) = provider.api_key()? {
+        return Ok(auth_provider_for_env_key(provider, api_key));
     }
 
     if let Some(auth) = bearer_auth_for_provider(provider)? {
@@ -264,13 +283,20 @@ fn should_bootstrap_chatgpt_agent_identity(
         && matches!(auth, Some(CodexAuth::Chatgpt(_)))
 }
 
+fn auth_provider_for_env_key(provider: &ModelProviderInfo, api_key: String) -> SharedAuthProvider {
+    match provider.env_key_auth {
+        Some(EnvKeyAuthScheme::XApiKey) => Arc::new(AnthropicApiKeyAuthProvider { api_key }),
+        Some(EnvKeyAuthScheme::Bearer) => Arc::new(BearerAuthProvider::new(api_key)),
+        None if provider.wire_api == WireApi::Anthropic => {
+            Arc::new(AnthropicApiKeyAuthProvider { api_key })
+        }
+        None => Arc::new(BearerAuthProvider::new(api_key)),
+    }
+}
+
 fn bearer_auth_for_provider(
     provider: &ModelProviderInfo,
 ) -> codex_protocol::error::Result<Option<BearerAuthProvider>> {
-    if let Some(api_key) = provider.api_key()? {
-        return Ok(Some(BearerAuthProvider::new(api_key)));
-    }
-
     if let Some(token) = provider.experimental_bearer_token.clone() {
         return Ok(Some(BearerAuthProvider::new(token)));
     }
@@ -482,6 +508,39 @@ mod tests {
         }
     }
 
+    #[test]
+    fn anthropic_api_key_auth_provider_adds_x_api_key_header() {
+        let auth = AnthropicApiKeyAuthProvider {
+            api_key: "test-api-key".to_string(),
+        };
+        let headers = auth.to_auth_headers();
+
+        assert_eq!(
+            headers
+                .get("x-api-key")
+                .and_then(|value| value.to_str().ok()),
+            Some("test-api-key")
+        );
+        assert!(!headers.contains_key(http::header::AUTHORIZATION));
+    }
+
+    #[test]
+    fn anthropic_provider_can_use_bearer_auth_for_env_key() {
+        let mut provider =
+            create_oss_provider_with_base_url("https://example.com/v1", WireApi::Anthropic);
+        provider.env_key_auth = Some(EnvKeyAuthScheme::Bearer);
+
+        let auth = auth_provider_for_env_key(&provider, "test-api-key".to_string());
+        let headers = auth.to_auth_headers();
+
+        assert_eq!(
+            headers
+                .get(http::header::AUTHORIZATION)
+                .and_then(|value| value.to_str().ok()),
+            Some("Bearer test-api-key")
+        );
+        assert!(!headers.contains_key("x-api-key"));
+    }
     #[tokio::test]
     async fn auth_manager_provider_follows_refreshes_but_not_account_switches() {
         let codex_home = test_codex_home();
