@@ -952,6 +952,25 @@
       ],
       "type": "string"
     },
+    "EnvKeyAuthScheme": {
+      "description": "Auth header scheme used for API keys loaded from `env_key`.",
+      "oneOf": [
+        {
+          "description": "Send the key as `Authorization: Bearer <key>`.",
+          "enum": [
+            "bearer"
+          ],
+          "type": "string"
+        },
+        {
+          "description": "Send the key as `x-api-key: <key>`.",
+          "enum": [
+            "x-api-key"
+          ],
+          "type": "string"
+        }
+      ]
+    },
     "ExperimentalRequestUserInput": {
       "additionalProperties": false,
       "properties": {
@@ -1789,6 +1808,14 @@
         "env_key": {
           "description": "Environment variable that stores the user's API key for this provider.",
           "type": "string"
+        },
+        "env_key_auth": {
+          "allOf": [
+            {
+              "$ref": "#/definitions/EnvKeyAuthScheme"
+            }
+          ],
+          "description": "Auth header scheme to use for the API key loaded from `env_key`."
         },
         "env_key_instructions": {
           "description": "Optional instructions to help the user get a valid value for the variable and set it.",
@@ -4934,6 +4961,13 @@
           "description": "The OpenAI Chat Completions API exposed at `/v1/chat/completions`.",
           "enum": [
             "chat"
+          ],
+          "type": "string"
+        },
+        {
+          "description": "The Anthropic Messages API exposed at `/v1/messages`.",
+          "enum": [
+            "anthropic"
           ],
           "type": "string"
         }
