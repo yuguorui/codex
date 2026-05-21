@@ -66,6 +66,9 @@ impl OpenAiModelsEndpoint {
     }
 
     async fn uses_codex_backend(&self) -> bool {
+        if self.provider_info.has_provider_scoped_auth() {
+            return false;
+        }
         self.auth()
             .await
             .as_ref()
@@ -128,8 +131,18 @@ impl ModelsEndpointClient for OpenAiModelsEndpoint {
         self.provider_info.has_command_auth()
     }
 
+    fn can_refresh_models_without_codex_backend(&self) -> bool {
+        self.provider_info.has_provider_scoped_auth()
+    }
+
     fn uses_codex_backend(&self) -> ModelsEndpointFuture<'_, bool> {
         Box::pin(OpenAiModelsEndpoint::uses_codex_backend(self))
+    }
+
+    fn treats_refresh_failure_as_non_fatal(&self) -> ModelsEndpointFuture<'_, bool> {
+        Box::pin(async move {
+            self.provider_info.has_provider_scoped_auth() || !self.uses_codex_backend().await
+        })
     }
 
     fn list_models<'a>(
@@ -349,7 +362,6 @@ mod tests {
 
         assert!(!endpoint.has_command_auth());
     }
-
     #[tokio::test]
     async fn model_request_uses_request_time_proxy_policy_and_exact_url() {
         let server = MockServer::start().await;
@@ -389,5 +401,21 @@ mod tests {
                 format!("{}/models?client_version=0.0.0", server.uri()),
             ))
         );
+    }
+    #[tokio::test]
+    async fn env_key_provider_does_not_use_codex_backend_models() {
+        let endpoint = OpenAiModelsEndpoint::new(
+            ModelProviderInfo {
+                env_key: Some("THIRD_PARTY_API_KEY".to_string()),
+                requires_openai_auth: false,
+                ..ModelProviderInfo::create_openai_provider(/*base_url*/ None)
+            },
+            Some(AuthManager::from_auth_for_testing(
+                CodexAuth::create_dummy_chatgpt_auth_for_testing(),
+            )),
+        );
+
+        assert!(!endpoint.uses_codex_backend().await);
+        assert!(endpoint.treats_refresh_failure_as_non_fatal().await);
     }
 }
