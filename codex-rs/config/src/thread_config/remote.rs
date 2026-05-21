@@ -3,6 +3,7 @@ use std::collections::HashMap;
 use std::num::NonZeroU64;
 use std::time::Duration;
 
+use codex_model_provider_info::EnvKeyAuthScheme;
 use codex_model_provider_info::ModelProviderInfo;
 use codex_model_provider_info::WireApi;
 use codex_protocol::config_types::ModelProviderAuthInfo;
@@ -160,6 +161,7 @@ fn model_provider_from_proto(
     let wire_api = match proto::WireApi::try_from(provider.wire_api) {
         Ok(proto::WireApi::Responses) => WireApi::Responses,
         Ok(proto::WireApi::Chat) => WireApi::Chat,
+        Ok(proto::WireApi::Anthropic) => WireApi::Anthropic,
         Ok(proto::WireApi::Unspecified) => {
             return Err(parse_error("remote thread config omitted wire_api"));
         }
@@ -174,6 +176,16 @@ fn model_provider_from_proto(
         name: provider.name,
         base_url: provider.base_url,
         env_key: provider.env_key,
+        env_key_auth: provider
+            .env_key_auth
+            .map(|scheme| {
+                scheme.parse::<EnvKeyAuthScheme>().map_err(|err| {
+                    parse_error(format!(
+                        "remote thread config returned invalid env_key_auth: {err}"
+                    ))
+                })
+            })
+            .transpose()?,
         env_key_instructions: provider.env_key_instructions,
         experimental_bearer_token: provider.experimental_bearer_token,
         auth: provider
@@ -217,6 +229,7 @@ fn model_provider_to_proto(
         name,
         base_url,
         env_key,
+        env_key_auth,
         env_key_instructions,
         experimental_bearer_token,
         auth,
@@ -242,6 +255,7 @@ fn model_provider_to_proto(
         name,
         base_url,
         env_key,
+        env_key_auth: env_key_auth.map(|scheme| scheme.to_string()),
         env_key_instructions,
         experimental_bearer_token,
         auth: auth.map(model_provider_auth_to_proto),
@@ -314,6 +328,7 @@ fn proto_wire_api(wire_api: WireApi) -> proto::WireApi {
     match wire_api {
         WireApi::Responses => proto::WireApi::Responses,
         WireApi::Chat => proto::WireApi::Chat,
+        WireApi::Anthropic => proto::WireApi::Anthropic,
     }
 }
 
@@ -479,6 +494,7 @@ mod tests {
                             name: "Local".to_string(),
                             base_url: Some("http://127.0.0.1:8061/api/codex".to_string()),
                             env_key: None,
+                            env_key_auth: None,
                             env_key_instructions: None,
                             experimental_bearer_token: None,
                             auth: Some(proto::ModelProviderAuthInfo {
@@ -568,6 +584,7 @@ mod tests {
             name: "Local".to_string(),
             base_url: Some("http://127.0.0.1:8061/api/codex".to_string()),
             env_key: None,
+            env_key_auth: None,
             env_key_instructions: None,
             experimental_bearer_token: None,
             auth: Some(ModelProviderAuthInfo {
