@@ -15,6 +15,7 @@ base_url = "http://localhost:11434/v1"
         name: "Ollama".into(),
         base_url: Some("http://localhost:11434/v1".into()),
         env_key: None,
+        env_key_auth: None,
         env_key_instructions: None,
         experimental_bearer_token: None,
         auth: None,
@@ -51,6 +52,7 @@ query_params = { api-version = "2025-04-01-preview" }
         name: "Azure".into(),
         base_url: Some("https://xxxxx.openai.azure.com/openai".into()),
         env_key: Some("AZURE_OPENAI_API_KEY".into()),
+        env_key_auth: None,
         env_key_instructions: None,
         experimental_bearer_token: None,
         auth: None,
@@ -91,6 +93,7 @@ supports_standalone_web_search = true
         name: "Example".into(),
         base_url: Some("https://example.com".into()),
         env_key: Some("API_KEY".into()),
+        env_key_auth: None,
         env_key_instructions: None,
         experimental_bearer_token: None,
         auth: None,
@@ -133,13 +136,97 @@ wire_api = "chat"
 }
 
 #[test]
+fn test_deserialize_anthropic_wire_api() {
+    let provider_toml = r#"
+name = "Anthropic"
+base_url = "https://api.anthropic.com/v1"
+env_key = "ANTHROPIC_API_KEY"
+wire_api = "anthropic"
+requires_openai_auth = false
+        "#;
+
+    let provider: ModelProviderInfo = toml::from_str(provider_toml).unwrap();
+    assert_eq!(provider.wire_api, WireApi::Anthropic);
+}
+
+#[test]
+fn test_deserialize_env_key_auth() {
+    let provider_toml = r#"
+name = "Anthropic Compatible"
+base_url = "https://example.com/anthropic/v1"
+env_key = "ANTHROPIC_COMPAT_API_KEY"
+env_key_auth = "bearer"
+wire_api = "anthropic"
+requires_openai_auth = false
+        "#;
+
+    let provider: ModelProviderInfo = toml::from_str(provider_toml).unwrap();
+    assert_eq!(provider.env_key_auth, Some(EnvKeyAuthScheme::Bearer));
+}
+
+#[test]
+fn test_anthropic_thinking_override_via_extra_body() {
+    // Default: no thinking override, provider uses adaptive (the new default).
+    let provider_toml = r#"
+name = "Anthropic"
+base_url = "https://api.anthropic.com/v1"
+env_key = "ANTHROPIC_API_KEY"
+wire_api = "anthropic"
+requires_openai_auth = false
+        "#;
+    let provider: ModelProviderInfo = toml::from_str(provider_toml).unwrap();
+    assert_eq!(provider.wire_api, WireApi::Anthropic);
+    // Without extra_body, the request defaults to { type: "adaptive" }.
+    assert!(provider.extra_body.is_none());
+
+    // Override to enabled with a custom token budget via extra_body.
+    let provider_toml = r#"
+name = "Anthropic Override"
+base_url = "https://api.anthropic.com/v1"
+env_key = "ANTHROPIC_API_KEY"
+wire_api = "anthropic"
+requires_openai_auth = false
+extra_body = { thinking = { type = "enabled", budget_tokens = 16000 } }
+        "#;
+    let provider: ModelProviderInfo = toml::from_str(provider_toml).unwrap();
+    assert_eq!(
+        provider.extra_body,
+        Some(maplit::hashmap! {
+            "thinking".to_string() => serde_json::json!({
+                "type": "enabled",
+                "budget_tokens": 16000,
+            }),
+        })
+    );
+
+    // Override to force adaptive even when reasoning effort would normally send "enabled".
+    let provider_toml = r#"
+name = "Anthropic Force Adaptive"
+base_url = "https://api.anthropic.com/v1"
+env_key = "ANTHROPIC_API_KEY"
+wire_api = "anthropic"
+requires_openai_auth = false
+extra_body = { thinking = { type = "adaptive" } }
+        "#;
+    let provider: ModelProviderInfo = toml::from_str(provider_toml).unwrap();
+    assert_eq!(
+        provider.extra_body,
+        Some(maplit::hashmap! {
+            "thinking".to_string() => serde_json::json!({
+                "type": "adaptive",
+            }),
+        })
+    );
+}
+
+#[test]
 fn test_deserialize_extra_headers_and_extra_body() {
     let provider_toml = r#"
-name = "DashScope"
-base_url = "https://dashscope.aliyuncs.com/compatible-mode/v1"
+name = "OpenAI Compatible"
+base_url = "https://example.com/compatible-mode/v1"
 wire_api = "chat"
 requires_openai_auth = false
-extra_headers = { "X-DashScope-DataInspection" = '{"input":"cip","output":"cip"}' }
+extra_headers = { "X-Provider-DataInspection" = '{"input":"cip","output":"cip"}' }
 env_extra_headers = { "X-Custom-Token" = "CUSTOM_TOKEN_ENV" }
 extra_body = { enable_thinking = true, thinking_budget = 1024 }
         "#;
@@ -149,7 +236,7 @@ extra_body = { enable_thinking = true, thinking_budget = 1024 }
     assert_eq!(
         provider.extra_headers,
         Some(maplit::hashmap! {
-            "X-DashScope-DataInspection".to_string() =>
+            "X-Provider-DataInspection".to_string() =>
                 r#"{"input":"cip","output":"cip"}"#.to_string(),
         })
     );
@@ -250,6 +337,7 @@ fn test_supports_remote_compaction_for_azure_name() {
         name: "Azure".into(),
         base_url: Some("https://example.com/openai".into()),
         env_key: Some("AZURE_OPENAI_API_KEY".into()),
+        env_key_auth: None,
         env_key_instructions: None,
         experimental_bearer_token: None,
         auth: None,
@@ -289,6 +377,7 @@ fn test_supports_remote_compaction_for_non_openai_non_azure_provider() {
         name: "Example".into(),
         base_url: Some("https://example.com/v1".into()),
         env_key: Some("API_KEY".into()),
+        env_key_auth: None,
         env_key_instructions: None,
         experimental_bearer_token: None,
         auth: None,
@@ -395,6 +484,7 @@ fn test_create_amazon_bedrock_provider() {
             name: "Amazon Bedrock".to_string(),
             base_url: None,
             env_key: None,
+            env_key_auth: None,
             env_key_instructions: None,
             experimental_bearer_token: None,
             auth: None,
