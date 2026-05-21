@@ -22,6 +22,7 @@ use tokio::sync::TryLockError;
 use tracing::Instrument as _;
 use tracing::error;
 use tracing::info;
+use tracing::warn;
 
 const MODEL_CACHE_FILE: &str = "models_cache.json";
 const DEFAULT_MODEL_CACHE_TTL: Duration = Duration::from_secs(300);
@@ -35,8 +36,18 @@ pub trait ModelsEndpointClient: fmt::Debug + Send + Sync {
     /// Returns whether this provider can authenticate command-scoped requests.
     fn has_command_auth(&self) -> bool;
 
+    /// Returns whether this provider has non-Codex-backend credentials for model refresh.
+    fn can_refresh_models_without_codex_backend(&self) -> bool {
+        self.has_command_auth()
+    }
+
     /// Returns whether the currently resolved auth can use Codex backend-only models.
     fn uses_codex_backend(&self) -> ModelsEndpointFuture<'_, bool>;
+
+    /// Returns whether remote model refresh failures should be treated as non-fatal.
+    fn treats_refresh_failure_as_non_fatal(&self) -> ModelsEndpointFuture<'_, bool> {
+        Box::pin(async move { !self.uses_codex_backend().await })
+    }
 
     /// Fetches the latest remote model catalog and optional ETag.
     fn list_models<'a>(
@@ -328,7 +339,7 @@ impl OpenAiModelsManager {
             .refresh_available_models(refresh_strategy, &http_client_factory)
             .await
         {
-            error!("failed to refresh available models: {err}");
+            self.log_refresh_error(&err).await;
         }
         ModelsResponse {
             models: self.get_remote_models().await,
@@ -349,6 +360,18 @@ impl OpenAiModelsManager {
             .refresh_available_models(RefreshStrategy::Online, &http_client_factory)
             .await
         {
+            self.log_refresh_error(&err).await;
+        }
+    }
+
+    async fn log_refresh_error(&self, err: &codex_protocol::error::CodexErr) {
+        if self
+            .endpoint_client
+            .treats_refresh_failure_as_non_fatal()
+            .await
+        {
+            warn!("failed to refresh third-party available models: {err}");
+        } else {
             error!("failed to refresh available models: {err}");
         }
     }
@@ -411,7 +434,10 @@ impl OpenAiModelsManager {
     }
 
     async fn should_refresh_models(&self) -> bool {
-        self.endpoint_client.uses_codex_backend().await || self.endpoint_client.has_command_auth()
+        self.endpoint_client.uses_codex_backend().await
+            || self
+                .endpoint_client
+                .can_refresh_models_without_codex_backend()
     }
 
     async fn get_etag(&self) -> Option<String> {
