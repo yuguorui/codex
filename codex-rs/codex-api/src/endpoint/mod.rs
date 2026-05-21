@@ -1,3 +1,4 @@
+pub(crate) mod anthropic;
 pub(crate) mod chat;
 pub(crate) mod compact;
 pub(crate) mod images;
@@ -10,6 +11,8 @@ pub(crate) mod responses_websocket;
 pub(crate) mod search;
 mod session;
 
+pub use anthropic::AnthropicClient;
+pub use anthropic::AnthropicOptions;
 pub use chat::ChatClient;
 pub use chat::ChatOptions;
 pub use compact::CompactClient;
