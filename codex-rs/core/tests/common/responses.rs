@@ -1091,6 +1091,14 @@ fn chat_mock() -> (MockBuilder, ResponseMock) {
     (mock, response_mock)
 }
 
+fn anthropic_mock() -> (MockBuilder, ResponseMock) {
+    let response_mock = ResponseMock::new();
+    let mock = Mock::given(method("POST"))
+        .and(path_regex(".*/messages$"))
+        .and(response_mock.clone());
+    (mock, response_mock)
+}
+
 fn compact_mock() -> (MockBuilder, ResponseMock) {
     let response_mock = ResponseMock::new();
     let mock = Mock::given(method("POST"))
@@ -1131,6 +1139,15 @@ pub async fn mount_sse_once(server: &MockServer, body: String) -> ResponseMock {
 
 pub async fn mount_chat_sse_once(server: &MockServer, body: String) -> ResponseMock {
     let (mock, response_mock) = chat_mock();
+    mock.respond_with(sse_response(body))
+        .up_to_n_times(1)
+        .mount(server)
+        .await;
+    response_mock
+}
+
+pub async fn mount_anthropic_sse_once(server: &MockServer, body: String) -> ResponseMock {
+    let (mock, response_mock) = anthropic_mock();
     mock.respond_with(sse_response(body))
         .up_to_n_times(1)
         .mount(server)
