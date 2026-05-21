@@ -1283,9 +1283,8 @@ fn token_usage_update_is_emitted_on_turn_completion() {
                 usage: Usage {
                     input_tokens: 10,
                     cached_input_tokens: 3,
-                    cache_write_input_tokens: 4,
+                    cache_creation_input_tokens: 4,
                     output_tokens: 29,
-                    cache_creation_input_tokens: 0,
                     reasoning_output_tokens: 7,
                 },
             })],
