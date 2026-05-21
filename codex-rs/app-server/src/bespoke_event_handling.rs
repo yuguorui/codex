@@ -3852,6 +3852,7 @@ mod tests {
             total_token_usage: TokenUsage {
                 input_tokens: 100,
                 cached_input_tokens: 25,
+                cache_creation_input_tokens: 0,
                 cache_write_input_tokens: 0,
                 output_tokens: 50,
                 reasoning_output_tokens: 9,
@@ -3861,6 +3862,7 @@ mod tests {
             last_token_usage: TokenUsage {
                 input_tokens: 10,
                 cached_input_tokens: 5,
+                cache_creation_input_tokens: 0,
                 cache_write_input_tokens: 0,
                 output_tokens: 7,
                 reasoning_output_tokens: 1,

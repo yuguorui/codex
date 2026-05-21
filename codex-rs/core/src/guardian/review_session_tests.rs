@@ -821,7 +821,8 @@ fn token_usage_delta_never_reports_negative_usage() {
     let start = TokenUsage {
         input_tokens: 10,
         cached_input_tokens: 8,
-        cache_write_input_tokens: 8,
+        cache_creation_input_tokens: 0,
+        cache_write_input_tokens: 0,
         output_tokens: 6,
         reasoning_output_tokens: 4,
         total_tokens: 28,
@@ -830,7 +831,8 @@ fn token_usage_delta_never_reports_negative_usage() {
     let end = TokenUsage {
         input_tokens: 15,
         cached_input_tokens: 7,
-        cache_write_input_tokens: 7,
+        cache_creation_input_tokens: 0,
+        cache_write_input_tokens: 0,
         output_tokens: 10,
         reasoning_output_tokens: 2,
         total_tokens: 34,
@@ -842,6 +844,7 @@ fn token_usage_delta_never_reports_negative_usage() {
         TokenUsage {
             input_tokens: 5,
             cached_input_tokens: 0,
+            cache_creation_input_tokens: 0,
             cache_write_input_tokens: 0,
             output_tokens: 4,
             reasoning_output_tokens: 0,
