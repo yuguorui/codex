@@ -570,6 +570,40 @@ async fn summarize_memories_returns_empty_for_empty_input() {
     assert_eq!(output.len(), 0);
 }
 
+#[test]
+fn responses_request_carries_model_extra_body() {
+    let client = test_model_client(SessionSource::Cli);
+    let provider_info = create_oss_provider_with_base_url("https://example.com/v1", WireApi::Chat);
+    let provider = provider_info
+        .to_api_provider(/*auth_mode*/ None)
+        .expect("provider should convert");
+    let mut model_info = test_model_info();
+    model_info.extra_body = Some(std::collections::HashMap::from([(
+        "enable_thinking".to_string(),
+        json!(true),
+    )]));
+    let prompt = crate::client_common::Prompt {
+        base_instructions: BaseInstructions {
+            text: "base instructions".to_string(),
+        },
+        ..Default::default()
+    };
+
+    let request = client
+        .build_responses_request(
+            &provider,
+            &prompt,
+            &model_info,
+            /*effort*/ None,
+            codex_protocol::config_types::ReasoningSummary::Auto,
+            /*service_tier*/ None,
+            /*window_id*/ "test-window",
+        )
+        .expect("request should build");
+
+    assert_eq!(request.extra_body, model_info.extra_body.unwrap());
+}
+
 #[tokio::test]
 async fn dropped_response_stream_traces_cancelled_partial_output() -> anyhow::Result<()> {
     let temp = TempDir::new()?;
