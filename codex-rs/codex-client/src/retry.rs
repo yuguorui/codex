@@ -9,6 +9,7 @@ use tokio::time::sleep;
 pub struct RetryPolicy {
     pub max_attempts: u64,
     pub base_delay: Duration,
+    pub max_delay: Duration,
     pub retry_on: RetryOn,
 }
 
@@ -46,6 +47,10 @@ pub fn backoff(base: Duration, attempt: u64) -> Duration {
     Duration::from_millis((raw as f64 * jitter) as u64)
 }
 
+pub fn capped_backoff(base: Duration, attempt: u64, max_delay: Duration) -> Duration {
+    backoff(base, attempt).min(max_delay)
+}
+
 pub async fn run_with_retry<T, F, Fut>(
     policy: RetryPolicy,
     mut make_req: impl FnMut() -> Request,
@@ -64,10 +69,31 @@ where
                     .retry_on
                     .should_retry(&err, attempt, policy.max_attempts) =>
             {
-                sleep(backoff(policy.base_delay, attempt + 1)).await;
+                sleep(capped_backoff(
+                    policy.base_delay,
+                    attempt + 1,
+                    policy.max_delay,
+                ))
+                .await;
             }
             Err(err) => return Err(err),
         }
     }
     Err(TransportError::RetryLimit)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn capped_backoff_limits_large_exponential_delay() {
+        let delay = capped_backoff(
+            Duration::from_millis(200),
+            20,
+            Duration::from_millis(10_000),
+        );
+
+        assert_eq!(delay, Duration::from_millis(10_000));
+    }
 }
