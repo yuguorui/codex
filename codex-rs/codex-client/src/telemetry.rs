@@ -11,4 +11,14 @@ pub trait RequestTelemetry: Send + Sync {
         error: Option<&TransportError>,
         duration: Duration,
     );
+
+    fn on_retry(
+        &self,
+        next_attempt: u64,
+        status: Option<StatusCode>,
+        error: &TransportError,
+        delay: Duration,
+    ) {
+        let _ = (next_attempt, status, error, delay);
+    }
 }
