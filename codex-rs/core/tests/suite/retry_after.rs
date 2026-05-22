@@ -301,6 +301,7 @@ async fn http_retry_backoff_exhausts_attempts() {
         RetryPolicy {
             max_attempts: 2,
             base_delay: Duration::from_millis(200),
+            max_delay: Duration::from_secs(1),
             retry_on: RetryOn {
                 retry_429: false,
                 retry_5xx: true,
