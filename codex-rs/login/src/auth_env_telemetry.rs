@@ -75,6 +75,7 @@ mod tests {
             env_extra_headers: None,
             extra_body: None,
             request_max_retries: None,
+            request_max_retry_delay_ms: None,
             stream_max_retries: None,
             stream_idle_timeout_ms: None,
             websocket_connect_timeout_ms: None,
