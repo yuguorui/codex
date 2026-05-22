@@ -63,6 +63,7 @@ async fn retries_on_early_close() {
         extra_body: None,
         // exercise retry path: first attempt yields incomplete stream, so allow 1 retry
         request_max_retries: Some(0),
+        request_max_retry_delay_ms: None,
         stream_max_retries: Some(1),
         stream_idle_timeout_ms: Some(2000),
         websocket_connect_timeout_ms: None,

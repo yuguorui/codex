@@ -21,7 +21,7 @@ use crate::endpoint::realtime_websocket::protocol::RealtimeVoice;
 use crate::endpoint::realtime_websocket::protocol::parse_realtime_event;
 use crate::error::ApiError;
 use crate::provider::Provider;
-use codex_client::backoff;
+use codex_client::capped_backoff;
 use codex_http_client::maybe_build_rustls_client_config_with_custom_ca;
 use codex_protocol::protocol::ConversationTextParams;
 use codex_protocol::protocol::ConversationTextRole;
@@ -748,7 +748,11 @@ impl RealtimeWebsocketClient {
             match result {
                 Ok(connection) => return Ok(connection),
                 Err(err) if attempt < self.provider.retry.max_attempts => {
-                    let delay = backoff(self.provider.retry.base_delay, attempt + 1);
+                    let delay = capped_backoff(
+                        self.provider.retry.base_delay,
+                        attempt + 1,
+                        self.provider.retry.max_delay,
+                    );
                     warn!(
                         attempt = attempt + 1,
                         call_id,
@@ -1959,6 +1963,7 @@ mod tests {
             retry: crate::provider::RetryConfig {
                 max_attempts: 1,
                 base_delay: Duration::from_millis(1),
+                max_delay: Duration::from_millis(1),
                 retry_429: false,
                 retry_5xx: false,
                 retry_transport: false,
@@ -2285,6 +2290,7 @@ mod tests {
             retry: crate::provider::RetryConfig {
                 max_attempts: 1,
                 base_delay: Duration::from_millis(1),
+                max_delay: Duration::from_millis(1),
                 retry_429: false,
                 retry_5xx: false,
                 retry_transport: false,
@@ -2412,6 +2418,7 @@ mod tests {
             retry: crate::provider::RetryConfig {
                 max_attempts: 1,
                 base_delay: Duration::from_millis(1),
+                max_delay: Duration::from_millis(1),
                 retry_429: false,
                 retry_5xx: false,
                 retry_transport: false,
@@ -2518,6 +2525,7 @@ mod tests {
             retry: crate::provider::RetryConfig {
                 max_attempts: 1,
                 base_delay: Duration::from_millis(1),
+                max_delay: Duration::from_millis(1),
                 retry_429: false,
                 retry_5xx: false,
                 retry_transport: false,
@@ -2610,6 +2618,7 @@ mod tests {
             retry: crate::provider::RetryConfig {
                 max_attempts: 1,
                 base_delay: Duration::from_millis(1),
+                max_delay: Duration::from_millis(1),
                 retry_429: false,
                 retry_5xx: false,
                 retry_transport: false,
