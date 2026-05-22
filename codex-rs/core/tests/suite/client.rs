@@ -66,6 +66,7 @@ use core_test_support::responses::ev_function_call;
 use core_test_support::responses::ev_message_item_added;
 use core_test_support::responses::ev_output_text_delta;
 use core_test_support::responses::ev_response_created;
+use core_test_support::responses::mount_response_sequence;
 use core_test_support::responses::mount_sse_once;
 use core_test_support::responses::mount_sse_once_match;
 use core_test_support::responses::mount_sse_sequence;
@@ -1449,6 +1450,7 @@ async fn send_provider_auth_request(server: &MockServer, auth: ModelProviderAuth
         env_extra_headers: None,
         extra_body: None,
         request_max_retries: Some(0),
+        request_max_retry_delay_ms: None,
         stream_max_retries: Some(0),
         stream_idle_timeout_ms: Some(5_000),
         websocket_connect_timeout_ms: None,
@@ -3190,6 +3192,7 @@ async fn azure_responses_request_includes_store_and_prefixed_item_ids() {
         env_extra_headers: None,
         extra_body: None,
         request_max_retries: Some(0),
+        request_max_retry_delay_ms: None,
         stream_max_retries: Some(0),
         stream_idle_timeout_ms: Some(5_000),
         websocket_connect_timeout_ms: None,
@@ -3621,6 +3624,76 @@ async fn usage_limit_error_emits_rate_limit_event() -> anyhow::Result<()> {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn request_retry_on_429_emits_warning_event() {
+    skip_if_no_network!();
+    let server = MockServer::start().await;
+
+    let rate_limited = ResponseTemplate::new(429)
+        .insert_header("content-type", "application/json")
+        .set_body_json(json!({
+            "error": {
+                "type": "rate_limit_exceeded",
+                "message": "synthetic rate limit"
+            }
+        }));
+    let success = ResponseTemplate::new(200)
+        .insert_header("content-type", "text/event-stream")
+        .set_body_raw(
+            sse(vec![
+                ev_response_created("resp_after_retry"),
+                ev_completed("resp_after_retry"),
+            ]),
+            "text/event-stream",
+        );
+    mount_response_sequence(&server, vec![rate_limited, success]).await;
+
+    let mut provider =
+        built_in_model_providers(/* openai_base_url */ /*openai_base_url*/ None)["openai"].clone();
+    provider.base_url = Some(format!("{}/v1", server.uri()));
+    provider.supports_websockets = false;
+    provider.request_max_retries = Some(1);
+    provider.request_max_retry_delay_ms = Some(100);
+
+    let mut builder = test_codex()
+        .with_auth(CodexAuth::from_api_key("test"))
+        .with_config(move |config| {
+            config.model_provider = provider;
+        });
+    let codex = builder
+        .build(&server)
+        .await
+        .expect("create conversation")
+        .codex;
+
+    codex
+        .submit(Op::UserInput {
+            items: vec![UserInput::Text {
+                text: "hello".into(),
+                text_elements: Vec::new(),
+            }],
+            final_output_json_schema: None,
+            responsesapi_client_metadata: None,
+            additional_context: Default::default(),
+            thread_settings: Default::default(),
+        })
+        .await
+        .expect("submission should succeed");
+
+    let warning = wait_for_event(&codex, |msg| matches!(msg, EventMsg::Warning(_))).await;
+    let EventMsg::Warning(warning) = warning else {
+        unreachable!();
+    };
+    assert!(
+        warning
+            .message
+            .contains("Rate limited by the model provider")
+    );
+    assert!(warning.message.contains("retrying request 1"));
+
+    wait_for_event(&codex, |msg| matches!(msg, EventMsg::TurnComplete(_))).await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn context_window_error_sets_total_tokens_to_model_window() -> anyhow::Result<()> {
     skip_if_no_network!(Ok(()));
     let server = MockServer::start().await;
@@ -3852,6 +3925,7 @@ async fn azure_overrides_assign_properties_used_for_responses_url() {
         env_extra_headers: None,
         extra_body: None,
         request_max_retries: None,
+        request_max_retry_delay_ms: None,
         stream_max_retries: None,
         stream_idle_timeout_ms: None,
         websocket_connect_timeout_ms: None,
@@ -3946,6 +4020,7 @@ async fn env_var_overrides_loaded_auth() {
         env_extra_headers: None,
         extra_body: None,
         request_max_retries: None,
+        request_max_retry_delay_ms: None,
         stream_max_retries: None,
         stream_idle_timeout_ms: None,
         websocket_connect_timeout_ms: None,
