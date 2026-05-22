@@ -3,11 +3,13 @@ use codex_http_client::TransportError;
 use rand::Rng;
 use std::future::Future;
 use std::time::Duration;
+use tokio::time::sleep;
 
 #[derive(Debug, Clone)]
 pub struct RetryPolicy {
     pub max_attempts: u64,
     pub base_delay: Duration,
+    pub max_delay: Duration,
     pub retry_on: RetryOn,
 }
 
@@ -77,6 +79,10 @@ macro_rules! record_retry {
     }};
 }
 
+pub fn capped_backoff(base: Duration, attempt: u64, max_delay: Duration) -> Duration {
+    backoff(base, attempt).min(max_delay)
+}
+
 pub async fn run_with_retry<T, F, Fut>(
     policy: RetryPolicy,
     mut make_req: impl FnMut() -> Request,
@@ -96,12 +102,28 @@ where
                     .should_retry(&err, attempt, policy.max_attempts) =>
             {
                 let retry_attempt = attempt + 1;
-                let delay = backoff(policy.base_delay, retry_attempt);
+                let delay = capped_backoff(policy.base_delay, retry_attempt, policy.max_delay);
                 crate::record_retry!(retry_attempt, delay, RetryOperation::HttpRequest);
-                tokio::time::sleep(delay).await;
+                sleep(delay).await;
             }
             Err(err) => return Err(err),
         }
     }
     Err(TransportError::RetryLimit)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn capped_backoff_limits_large_exponential_delay() {
+        let delay = capped_backoff(
+            Duration::from_millis(200),
+            20,
+            Duration::from_millis(10_000),
+        );
+
+        assert_eq!(delay, Duration::from_millis(10_000));
+    }
 }
