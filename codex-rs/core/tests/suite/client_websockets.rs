@@ -2284,6 +2284,7 @@ fn websocket_provider_with_connect_timeout(
         env_extra_headers: None,
         extra_body: None,
         request_max_retries: Some(0),
+        request_max_retry_delay_ms: None,
         stream_max_retries: Some(0),
         stream_idle_timeout_ms: Some(5_000),
         websocket_connect_timeout_ms,
