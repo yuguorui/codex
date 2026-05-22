@@ -1859,6 +1859,12 @@
           "minimum": 0.0,
           "type": "integer"
         },
+        "request_max_retry_delay_ms": {
+          "description": "Maximum delay (in milliseconds) between failed HTTP request retries.",
+          "format": "uint64",
+          "minimum": 0.0,
+          "type": "integer"
+        },
         "requires_openai_auth": {
           "default": false,
           "description": "Does this provider require an OpenAI API Key or ChatGPT login token? If true, user is presented with login screen on first run, and login preference and token/key are stored in auth.json. If false (which is the default), login screen is skipped, and API key (if needed) comes from the \"env_key\" environment variable.",
