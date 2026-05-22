@@ -80,6 +80,7 @@ async fn continue_after_stream_error() {
         env_extra_headers: None,
         extra_body: None,
         request_max_retries: Some(1),
+        request_max_retry_delay_ms: None,
         stream_max_retries: Some(1),
         stream_idle_timeout_ms: Some(2_000),
         websocket_connect_timeout_ms: None,
