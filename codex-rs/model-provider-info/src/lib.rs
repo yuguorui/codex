@@ -27,11 +27,14 @@ use std::time::Duration;
 const DEFAULT_STREAM_IDLE_TIMEOUT_MS: u64 = 300_000;
 const DEFAULT_STREAM_MAX_RETRIES: u64 = 5;
 const DEFAULT_REQUEST_MAX_RETRIES: u64 = 4;
+const DEFAULT_REQUEST_MAX_RETRY_DELAY_MS: u64 = 10_000;
 pub const DEFAULT_WEBSOCKET_CONNECT_TIMEOUT_MS: u64 = 15_000;
 /// Hard cap for user-configured `stream_max_retries`.
 const MAX_STREAM_MAX_RETRIES: u64 = 100;
 /// Hard cap for user-configured `request_max_retries`.
 const MAX_REQUEST_MAX_RETRIES: u64 = 100;
+/// Hard cap for user-configured `request_max_retry_delay_ms`.
+const MAX_REQUEST_MAX_RETRY_DELAY_MS: u64 = 300_000;
 
 const OPENAI_PROVIDER_NAME: &str = "OpenAI";
 const OPENAI_ACTOR_AUTHORIZATION_HEADER: &str = "x-openai-actor-authorization";
@@ -183,6 +186,8 @@ pub struct ModelProviderInfo {
     pub extra_body: Option<HashMap<String, serde_json::Value>>,
     /// Maximum number of times to retry a failed HTTP request to this provider.
     pub request_max_retries: Option<u64>,
+    /// Maximum delay (in milliseconds) between failed HTTP request retries.
+    pub request_max_retry_delay_ms: Option<u64>,
     /// Number of times to retry reconnecting a dropped streaming response before failing.
     pub stream_max_retries: Option<u64>,
     /// Idle timeout (in milliseconds) to wait for activity on a streaming response before treating
@@ -335,7 +340,8 @@ impl ModelProviderInfo {
         let retry = ApiRetryConfig {
             max_attempts: self.request_max_retries(),
             base_delay: Duration::from_millis(200),
-            retry_429: false,
+            max_delay: self.request_max_retry_delay(),
+            retry_429: true,
             retry_5xx: true,
             retry_transport: true,
         };
@@ -377,6 +383,15 @@ impl ModelProviderInfo {
         self.request_max_retries
             .unwrap_or(DEFAULT_REQUEST_MAX_RETRIES)
             .min(MAX_REQUEST_MAX_RETRIES)
+    }
+
+    /// Effective maximum delay between failed HTTP request retries for this provider.
+    pub fn request_max_retry_delay(&self) -> Duration {
+        Duration::from_millis(
+            self.request_max_retry_delay_ms
+                .unwrap_or(DEFAULT_REQUEST_MAX_RETRY_DELAY_MS)
+                .min(MAX_REQUEST_MAX_RETRY_DELAY_MS),
+        )
     }
 
     /// Effective maximum number of stream reconnection attempts for this provider.
@@ -433,6 +448,7 @@ impl ModelProviderInfo {
             extra_body: None,
             // Use global defaults for retry/timeout unless overridden in config.toml.
             request_max_retries: None,
+            request_max_retry_delay_ms: None,
             stream_max_retries: None,
             stream_idle_timeout_ms: None,
             websocket_connect_timeout_ms: None,
@@ -471,6 +487,7 @@ impl ModelProviderInfo {
             env_extra_headers: None,
             extra_body: None,
             request_max_retries: None,
+            request_max_retry_delay_ms: None,
             stream_max_retries: None,
             stream_idle_timeout_ms: None,
             websocket_connect_timeout_ms: None,
@@ -632,6 +649,7 @@ pub fn create_oss_provider_with_base_url(base_url: &str, wire_api: WireApi) -> M
         env_extra_headers: None,
         extra_body: None,
         request_max_retries: None,
+        request_max_retry_delay_ms: None,
         stream_max_retries: None,
         stream_idle_timeout_ms: None,
         websocket_connect_timeout_ms: None,
