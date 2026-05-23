@@ -553,6 +553,7 @@ impl LunaSampler {
             text: None,
             client_metadata: None,
             access_programs: None,
+            extra_body: HashMap::new(),
         };
         let (supersede, mut superseded) = oneshot::channel();
         let scored = Arc::new(AtomicBool::new(false));

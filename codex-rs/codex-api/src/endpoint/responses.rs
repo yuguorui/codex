@@ -121,7 +121,11 @@ impl<T: HttpTransport> ResponsesClient<T> {
             self.endpoint,
         );
 
-        let mut body = EncodedJsonBody::encode(&request)
+        let mut body_value = serde_json::to_value(&request)
+            .map_err(|e| ApiError::Stream(format!("failed to encode responses request: {e}")))?;
+        merge_extra_body(&mut body_value, &self.session.provider().extra_body);
+        merge_extra_body(&mut body_value, &request.extra_body);
+        let mut body = EncodedJsonBody::encode(&body_value)
             .map_err(|e| ApiError::Stream(format!("failed to encode responses request: {e}")))?;
         if guardian_ticket.is_some() {
             body = body.without_body_logging();
@@ -199,5 +203,116 @@ impl<T: HttpTransport> ResponsesClient<T> {
             self.sse_telemetry.clone(),
             turn_state,
         ))
+    }
+}
+
+fn merge_extra_body(body: &mut Value, extra_body: &std::collections::HashMap<String, Value>) {
+    if extra_body.is_empty() {
+        return;
+    }
+    let Some(body) = body.as_object_mut() else {
+        return;
+    };
+    for (key, value) in extra_body {
+        match body.get_mut(key) {
+            Some(existing) => merge_extra_body_value(existing, value),
+            None => {
+                body.insert(key.clone(), value.clone());
+            }
+        }
+    }
+}
+
+fn merge_extra_body_value(existing: &mut Value, extra: &Value) {
+    match (existing, extra) {
+        (Value::Object(existing), Value::Object(extra)) => {
+            for (key, value) in extra {
+                match existing.get_mut(key) {
+                    Some(existing_value) => merge_extra_body_value(existing_value, value),
+                    None => {
+                        existing.insert(key.clone(), value.clone());
+                    }
+                }
+            }
+        }
+        (Value::Array(existing), Value::Array(extra)) => {
+            existing.extend(extra.iter().cloned());
+        }
+        (existing, extra) => {
+            *existing = extra.clone();
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use pretty_assertions::assert_eq;
+    use serde_json::json;
+    use std::collections::HashMap;
+
+    #[test]
+    fn merge_extra_body_deep_merges_objects_and_appends_arrays() {
+        let mut body = json!({
+            "model": "qwen3.7-max",
+            "tools": [
+                {"type": "function", "name": "shell"}
+            ],
+            "reasoning": {
+                "summary": "auto"
+            }
+        });
+        let extra_body = HashMap::from([
+            (
+                "tools".to_string(),
+                json!([
+                    {"type": "web_search"},
+                    {"type": "code_interpreter"}
+                ]),
+            ),
+            (
+                "reasoning".to_string(),
+                json!({
+                    "effort": "high"
+                }),
+            ),
+        ]);
+
+        merge_extra_body(&mut body, &extra_body);
+
+        assert_eq!(
+            body,
+            json!({
+                "model": "qwen3.7-max",
+                "tools": [
+                    {"type": "function", "name": "shell"},
+                    {"type": "web_search"},
+                    {"type": "code_interpreter"}
+                ],
+                "reasoning": {
+                    "summary": "auto",
+                    "effort": "high"
+                }
+            })
+        );
+    }
+
+    #[test]
+    fn merge_extra_body_replaces_scalars() {
+        let mut body = json!({
+            "model": "qwen3.7-max",
+            "tool_choice": "auto"
+        });
+        let extra_body = HashMap::from([("tool_choice".to_string(), json!("required"))]);
+
+        merge_extra_body(&mut body, &extra_body);
+
+        assert_eq!(
+            body,
+            json!({
+                "model": "qwen3.7-max",
+                "tool_choice": "required"
+            })
+        );
     }
 }
