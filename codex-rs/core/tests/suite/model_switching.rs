@@ -114,6 +114,7 @@ fn test_model_info(
         comp_hash: None,
         effective_context_window_percent: 95,
         experimental_supported_tools: Vec::new(),
+        extra_body: None,
     }
 }
 
@@ -953,6 +954,7 @@ async fn model_switch_to_smaller_model_updates_token_context_window() -> Result<
         comp_hash: None,
         effective_context_window_percent,
         experimental_supported_tools: Vec::new(),
+        extra_body: None,
     };
     let mut smaller_model = base_model.clone();
     smaller_model.slug = smaller_model_slug.to_string();
