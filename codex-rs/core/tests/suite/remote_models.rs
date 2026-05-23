@@ -555,6 +555,7 @@ async fn remote_models_remote_model_uses_unified_exec() -> Result<()> {
         comp_hash: None,
         effective_context_window_percent: 95,
         experimental_supported_tools: Vec::new(),
+        extra_body: None,
     };
 
     let models_mock = mount_models_once(
@@ -818,6 +819,7 @@ async fn remote_models_apply_legacy_instructions() -> Result<()> {
         comp_hash: None,
         effective_context_window_percent: 95,
         experimental_supported_tools: Vec::new(),
+        extra_body: None,
     };
     let mut models_response = serde_json::to_value(ModelsResponse {
         models: vec![remote_model],
@@ -1394,5 +1396,6 @@ fn test_remote_model_with_policy(
         comp_hash: None,
         effective_context_window_percent: 95,
         experimental_supported_tools: Vec::new(),
+        extra_body: None,
     }
 }
