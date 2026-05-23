@@ -97,6 +97,7 @@ mod tests {
     use http::StatusCode;
     use pretty_assertions::assert_eq;
     use serde_json::json;
+    use std::collections::HashMap;
     use std::sync::Mutex;
     use std::time::Duration;
 
@@ -158,6 +159,7 @@ mod tests {
                 retry_transport: true,
             },
             stream_idle_timeout: Duration::from_secs(1),
+            extra_body: HashMap::new(),
         }
     }
 
