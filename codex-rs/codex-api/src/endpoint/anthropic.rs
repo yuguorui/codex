@@ -447,7 +447,7 @@ fn anthropic_body_from_responses_request(
     )?;
     let has_tools = !tools.is_empty();
     let (system, messages) = anthropic_messages_from_items(&request.instructions, request.input)?;
-    let extra_body = HashMap::new();
+    let extra_body = request.extra_body;
     let metadata = session_id
         .map(|sid| {
             let inner = serde_json::to_string(&AnthropicMetadata {
@@ -990,6 +990,7 @@ mod tests {
             prompt_cache_key: None,
             text: None,
             client_metadata: None,
+            extra_body: HashMap::new(),
         }
     }
 

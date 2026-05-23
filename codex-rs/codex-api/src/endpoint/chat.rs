@@ -59,6 +59,7 @@ pub(crate) type ChatToolNameMap = HashMap<String, ChatToolName>;
 struct ChatRequestBody {
     body: Value,
     tool_names: ChatToolNameMap,
+    extra_body: HashMap<String, Value>,
 }
 
 const DEFAULT_CHAT_MAX_COMPLETION_TOKENS: u32 = 131_072;
@@ -245,6 +246,7 @@ impl<T: HttpTransport> ChatClient<T> {
 
         let mut request_body = chat_body_from_responses_request(request)?;
         merge_extra_body(&mut request_body.body, &self.session.provider().extra_body)?;
+        merge_extra_body(&mut request_body.body, &request_body.extra_body)?;
 
         let mut headers = extra_headers;
         if let Some(ref thread_id) = thread_id {
@@ -369,6 +371,7 @@ fn chat_body_from_responses_request(
         &mut tool_names,
     )?;
     let has_tools = !tools.is_empty();
+    let extra_body = request.extra_body;
     let request = ChatCompletionsRequest {
         model: request.model,
         messages: chat_messages_from_items(&request.instructions, request.input)?,
@@ -386,6 +389,7 @@ fn chat_body_from_responses_request(
     Ok(ChatRequestBody {
         body,
         tool_names,
+        extra_body,
     })
 }
 
@@ -938,6 +942,7 @@ mod tests {
             prompt_cache_key: None,
             text: None,
             client_metadata: None,
+            extra_body: HashMap::new(),
         }
     }
 
