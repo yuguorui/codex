@@ -1977,6 +1977,7 @@ async fn stdio_image_responses_are_sanitized_for_text_only_model() -> anyhow::Re
                 effective_context_window_percent: 95,
                 experimental_supported_tools: Vec::new(),
                 input_modalities: vec![InputModality::Text],
+                extra_body: None,
                 used_fallback_model_metadata: false,
                 supports_search_tool: false,
                 use_responses_lite: false,
