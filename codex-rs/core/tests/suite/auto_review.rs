@@ -269,5 +269,6 @@ fn remote_model_with_auto_review_override(slug: &str, review_model: &str) -> Mod
         comp_hash: None,
         effective_context_window_percent: 95,
         experimental_supported_tools: Vec::new(),
+        extra_body: None,
     }
 }
