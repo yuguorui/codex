@@ -122,6 +122,7 @@ fn test_model_info(
         comp_hash: None,
         effective_context_window_percent: 95,
         experimental_supported_tools: Vec::new(),
+        extra_body: None,
     }
 }
 

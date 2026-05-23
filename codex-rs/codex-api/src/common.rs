@@ -295,6 +295,8 @@ pub struct ResponsesApiRequest {
     pub client_metadata: Option<HashMap<String, String>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub access_programs: Option<AccessPrograms>,
+    #[serde(skip_serializing)]
+    pub extra_body: HashMap<String, serde_json::Value>,
 }
 
 impl<'a> From<&'a ResponsesApiRequest> for ResponseCreateWsRequest<'a> {
@@ -318,6 +320,7 @@ impl<'a> From<&'a ResponsesApiRequest> for ResponseCreateWsRequest<'a> {
             generate: None,
             client_metadata: request.client_metadata.clone(),
             access_programs: request.access_programs,
+            extra_body: request.extra_body.clone(),
         }
     }
 }
@@ -352,6 +355,8 @@ pub struct ResponseCreateWsRequest<'a> {
     pub client_metadata: Option<HashMap<String, String>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub access_programs: Option<AccessPrograms>,
+    #[serde(flatten)]
+    pub extra_body: HashMap<String, serde_json::Value>,
 }
 
 pub fn response_create_client_metadata(
