@@ -506,6 +506,7 @@ async fn remote_models_remote_model_uses_unified_exec() -> Result<()> {
         comp_hash: None,
         effective_context_window_percent: 95,
         experimental_supported_tools: Vec::new(),
+        extra_body: None,
     };
 
     let models_mock = mount_models_once(
@@ -760,6 +761,7 @@ async fn remote_models_apply_remote_base_instructions() -> Result<()> {
         comp_hash: None,
         effective_context_window_percent: 95,
         experimental_supported_tools: Vec::new(),
+        extra_body: None,
     };
     mount_models_once(
         &server,
@@ -1287,5 +1289,6 @@ fn test_remote_model_with_policy(
         comp_hash: None,
         effective_context_window_percent: 95,
         experimental_supported_tools: Vec::new(),
+        extra_body: None,
     }
 }
