@@ -306,6 +306,7 @@ impl LunaSampler {
                 /*output_schema_strict*/ true,
             ),
             client_metadata: Some(metadata),
+            extra_body: HashMap::new(),
         };
         let mut retried = false;
         'retry: loop {
