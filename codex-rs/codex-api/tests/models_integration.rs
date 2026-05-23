@@ -101,6 +101,7 @@ async fn models_client_hits_models_endpoint() {
             effective_context_window_percent: 95,
             experimental_supported_tools: Vec::new(),
             input_modalities: default_input_modalities(),
+            extra_body: None,
             used_fallback_model_metadata: false,
             supports_search_tool: false,
             use_responses_lite: false,
