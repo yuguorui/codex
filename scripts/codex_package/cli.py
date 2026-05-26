@@ -1,6 +1,7 @@
 """Command-line interface for building Codex package directories."""
 
 import argparse
+from dataclasses import replace
 import tempfile
 from pathlib import Path
 
@@ -91,6 +92,13 @@ def parse_args() -> argparse.Namespace:
         ),
     )
     parser.add_argument(
+        "--entrypoint-stem",
+        help=(
+            "Optional package entrypoint filename stem. The target executable "
+            "suffix is still added on Windows."
+        ),
+    )
+    parser.add_argument(
         "--bwrap-bin",
         type=Path,
         help=(
@@ -145,6 +153,9 @@ def main() -> int:
     args = parse_args()
     spec = TARGET_SPECS[getattr(args, "target", None) or default_target()]
     variant = PACKAGE_VARIANTS[args.variant]
+    if args.entrypoint_stem is not None:
+        validate_entrypoint_stem(args.entrypoint_stem)
+        variant = replace(variant, executable_stem=args.entrypoint_stem)
     package_dir_arg = getattr(args, "package_dir", None)
     package_dir = (
         package_dir_arg.resolve()
@@ -217,3 +228,10 @@ def resolve_optional_input_path(
         return None
 
     return resolve_input_path(explicit_path, description, flag_name)
+
+
+def validate_entrypoint_stem(entrypoint_stem: str) -> None:
+    if not entrypoint_stem:
+        raise RuntimeError("--entrypoint-stem must not be empty.")
+    if "/" in entrypoint_stem or "\\" in entrypoint_stem:
+        raise RuntimeError("--entrypoint-stem must be a filename stem, not a path.")
