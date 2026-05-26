@@ -246,6 +246,7 @@ async fn prompt_tools_are_consistent_across_requests(
     expected_tools_names.extend([
         "request_user_input",
         "apply_patch",
+        "fuzz_view_edit",
         "view_image",
         "tool_search",
         "web_search",
