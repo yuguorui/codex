@@ -1,0 +1,406 @@
+name: fork-release
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Release version in yyyymmddhhmm format. Defaults to current Asia/Shanghai time."
+        required: false
+        type: string
+      prerelease:
+        description: "Mark the GitHub Release as a prerelease."
+        required: false
+        type: boolean
+        default: false
+
+concurrency:
+  group: ${{ github.workflow }}
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+
+jobs:
+  metadata:
+    name: Prepare release metadata
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.metadata.outputs.version }}
+      tag: ${{ steps.metadata.outputs.tag }}
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+
+      - name: Resolve release version
+        id: metadata
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          requested_version="${{ inputs.version }}"
+          if [[ -z "$requested_version" ]]; then
+            requested_version="$(TZ=Asia/Shanghai date +%Y%m%d%H%M)"
+          fi
+
+          if [[ ! "$requested_version" =~ ^[0-9]{12}$ ]]; then
+            echo "Version ${requested_version} does not match yyyymmddhhmm."
+            exit 1
+          fi
+
+          echo "version=${requested_version}" >> "$GITHUB_OUTPUT"
+          echo "tag=rust-v${requested_version}" >> "$GITHUB_OUTPUT"
+
+  build:
+    name: Build ${{ matrix.target }}
+    needs: metadata
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 180
+    defaults:
+      run:
+        working-directory: codex-rs
+    env:
+      CARGO_PROFILE_RELEASE_LTO: thin
+      CARGO_PROFILE_RELEASE_CODEGEN_UNITS: ${{ matrix.release-codegen-units }}
+      CARGO_BUILD_JOBS: ${{ matrix.cargo-build-jobs }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: ubuntu-latest
+            target: x86_64-unknown-linux-musl
+            binaries: "codex codex-responses-api-proxy bwrap"
+            cargo-build-jobs: "2"
+            release-codegen-units: "8"
+          - runner: macos-15
+            target: aarch64-apple-darwin
+            binaries: "codex codex-responses-api-proxy"
+            cargo-build-jobs: "4"
+            release-codegen-units: "8"
+
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+
+      - name: Install Linux dependencies
+        if: ${{ runner.os == 'Linux' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo apt-get update -y
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+            libcap-dev \
+            libubsan1 \
+            pkg-config \
+            zstd
+
+      - name: Install macOS dependencies
+        if: ${{ runner.os == 'macOS' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          if ! command -v zstd >/dev/null 2>&1; then
+            brew install zstd
+          fi
+
+      - uses: dtolnay/rust-toolchain@e081816240890017053eacbb1bdf337761dc5582 # 1.95.0
+        with:
+          targets: ${{ matrix.target }}
+
+      - name: Use hermetic Cargo home for musl
+        if: ${{ contains(matrix.target, 'musl') }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo_home="${GITHUB_WORKSPACE}/.cargo-home"
+          mkdir -p "${cargo_home}/bin"
+          echo "CARGO_HOME=${cargo_home}" >> "$GITHUB_ENV"
+          echo "${cargo_home}/bin" >> "$GITHUB_PATH"
+          : > "${cargo_home}/config.toml"
+
+      - name: Install Zig for musl
+        if: ${{ contains(matrix.target, 'musl') }}
+        uses: mlugg/setup-zig@d1434d08867e3ee9daa34448df10607b98908d29 # v2.2.1
+        with:
+          version: 0.14.0
+          use-cache: false
+
+      - name: Install musl build tools
+        if: ${{ contains(matrix.target, 'musl') }}
+        env:
+          TARGET: ${{ matrix.target }}
+        run: bash "${GITHUB_WORKSPACE}/.github/scripts/install-musl-build-tools.sh"
+
+      - name: Configure rustc UBSan wrapper for musl
+        if: ${{ contains(matrix.target, 'musl') }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          ubsan=""
+          if command -v ldconfig >/dev/null 2>&1; then
+            ubsan="$(ldconfig -p | grep -m1 'libubsan\.so\.1' | sed -E 's/.*=> (.*)$/\1/')"
+          fi
+          wrapper_root="${RUNNER_TEMP:-/tmp}"
+          wrapper="${wrapper_root}/rustc-ubsan-wrapper"
+          cat > "${wrapper}" <<EOF
+          #!/usr/bin/env bash
+          set -euo pipefail
+          if [[ -n "${ubsan}" ]]; then
+            export LD_PRELOAD="${ubsan}\${LD_PRELOAD:+:\${LD_PRELOAD}}"
+          fi
+          exec "\$1" "\${@:2}"
+          EOF
+          chmod +x "${wrapper}"
+          echo "RUSTC_WRAPPER=${wrapper}" >> "$GITHUB_ENV"
+          echo "RUSTC_WORKSPACE_WRAPPER=" >> "$GITHUB_ENV"
+
+      - name: Clear sanitizer flags for musl
+        if: ${{ contains(matrix.target, 'musl') }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          cflags="${CFLAGS-}"
+          cxxflags="${CXXFLAGS-}"
+          {
+            echo "AWS_LC_SYS_NO_JITTER_ENTROPY=1"
+            echo "AWS_LC_SYS_NO_JITTER_ENTROPY_X86_64_UNKNOWN_LINUX_MUSL=1"
+            echo "RUSTFLAGS="
+            echo "CARGO_ENCODED_RUSTFLAGS="
+            echo "RUSTDOCFLAGS="
+            echo "CARGO_BUILD_RUSTFLAGS="
+            echo "CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUSTFLAGS="
+            echo "CARGO_TARGET_X86_64_UNKNOWN_LINUX_MUSL_RUSTFLAGS="
+            echo "CFLAGS=${cflags//-fsanitize=undefined/}"
+            echo "CXXFLAGS=${cxxflags//-fsanitize=undefined/}"
+          } >> "$GITHUB_ENV"
+
+      - name: Configure rusty_v8 artifact overrides
+        uses: ./.github/actions/setup-rusty-v8
+        with:
+          target: ${{ matrix.target }}
+
+      - name: Cargo build
+        shell: bash
+        run: |
+          set -euo pipefail
+          build_args=()
+          for binary in ${{ matrix.binaries }}; do
+            build_args+=(--bin "$binary")
+          done
+          cargo build --target ${{ matrix.target }} --release --timings "${build_args[@]}"
+
+      - name: Stage release artifacts
+        shell: bash
+        run: |
+          set -euo pipefail
+          target="${{ matrix.target }}"
+          dest="dist/${target}"
+          mkdir -p "$dest"
+
+          for binary in ${{ matrix.binaries }}; do
+            cp "target/${target}/release/${binary}" "$dest/${binary}-${target}"
+          done
+
+          bash "${GITHUB_WORKSPACE}/.github/scripts/build-codex-package-archive.sh" \
+            --target "$target" \
+            --bundle primary \
+            --entrypoint-dir "target/${target}/release" \
+            --entrypoint-stem "codex++" \
+            --archive-dir "$dest"
+
+          rm -f "$dest"/*.tar.zst "$dest"/*.zst
+          find "$dest" -type f ! -name 'codex-package-*.tar.gz' -delete
+
+      - uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
+        with:
+          name: ${{ matrix.target }}
+          path: codex-rs/dist/${{ matrix.target }}/*
+          if-no-files-found: error
+
+  release:
+    name: Create GitHub Release
+    needs:
+      - metadata
+      - build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          path: dist
+
+      - name: Add checksum manifest
+        shell: bash
+        run: |
+          set -euo pipefail
+          find dist -type f \
+            -name 'codex-package-*.tar.gz' \
+            -print |
+            sort |
+            while IFS= read -r archive; do
+              sha256sum "$archive" | awk -v name="$(basename "$archive")" '{ print $1 "  " name }'
+            done > dist/codex-package_SHA256SUMS
+
+          cat dist/codex-package_SHA256SUMS
+
+      - name: Add fork install script
+        shell: bash
+        env:
+          RELEASE_REPOSITORY: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          cat > dist/install-fork.sh <<'INSTALL_SCRIPT'
+          #!/usr/bin/env sh
+          set -eu
+
+          REPO="${CODEX_RELEASE_REPOSITORY:-__RELEASE_REPOSITORY__}"
+          RELEASE="${1:-latest}"
+          BIN_DIR="${CODEX_INSTALL_DIR:-$HOME/.local/bin}"
+          BIN_NAME="${CODEX_BIN_NAME:-codex++}"
+          PACKAGE_BIN_NAME="codex++"
+          CODEX_HOME_DIR="${CODEX_HOME:-$HOME/.codex}"
+          STANDALONE_ROOT="$CODEX_HOME_DIR/packages/standalone"
+          RELEASES_DIR="$STANDALONE_ROOT/releases"
+          CURRENT_LINK="$STANDALONE_ROOT/current"
+
+          usage() {
+            cat <<'EOF'
+          Usage: install-fork.sh [VERSION]
+
+          VERSION may be "latest", "rust-vyyyymmddhhmm", or "yyyymmddhhmm".
+          Set CODEX_RELEASE_REPOSITORY=owner/repo to override the release repository.
+          Set CODEX_BIN_NAME=name to choose the command name installed into CODEX_INSTALL_DIR.
+          EOF
+          }
+
+          if [ "${1:-}" = "--help" ] || [ "${1:-}" = "-h" ]; then
+            usage
+            exit 0
+          fi
+
+          download_file() {
+            url="$1"
+            output="$2"
+            if command -v curl >/dev/null 2>&1; then
+              curl -fsSL "$url" -o "$output"
+            elif command -v wget >/dev/null 2>&1; then
+              wget -q -O "$output" "$url"
+            else
+              echo "curl or wget is required." >&2
+              exit 1
+            fi
+          }
+
+          download_text() {
+            url="$1"
+            if command -v curl >/dev/null 2>&1; then
+              curl -fsSL "$url"
+            elif command -v wget >/dev/null 2>&1; then
+              wget -q -O - "$url"
+            else
+              echo "curl or wget is required." >&2
+              exit 1
+            fi
+          }
+
+          normalize_version() {
+            case "$1" in
+              "" | latest) printf 'latest\n' ;;
+              rust-v*) printf '%s\n' "${1#rust-v}" ;;
+              v*) printf '%s\n' "${1#v}" ;;
+              *) printf '%s\n' "$1" ;;
+            esac
+          }
+
+          resolve_version() {
+            normalized="$(normalize_version "$RELEASE")"
+            if [ "$normalized" != "latest" ]; then
+              printf '%s\n' "$normalized"
+              return
+            fi
+            release_json="$(download_text "https://api.github.com/repos/$REPO/releases/latest")"
+            resolved="$(printf '%s\n' "$release_json" | sed -n 's/.*"tag_name":[[:space:]]*"rust-v\([^"]*\)".*/\1/p' | head -n 1)"
+            if [ -z "$resolved" ]; then
+              echo "Failed to resolve latest release for $REPO." >&2
+              exit 1
+            fi
+            printf '%s\n' "$resolved"
+          }
+
+          file_sha256() {
+            if command -v sha256sum >/dev/null 2>&1; then
+              sha256sum "$1" | awk '{print $1}'
+            else
+              shasum -a 256 "$1" | awk '{print $1}'
+            fi
+          }
+
+          case "$(uname -s)" in
+            Linux) target="x86_64-unknown-linux-musl" ;;
+            Darwin)
+              if [ "$(uname -m)" = "arm64" ] || [ "$(uname -m)" = "aarch64" ]; then
+                target="aarch64-apple-darwin"
+              else
+                echo "This fork release only supports Apple Silicon macOS." >&2
+                exit 1
+              fi
+              ;;
+            *)
+              echo "This fork release only supports Linux x64 and Apple Silicon macOS." >&2
+              exit 1
+              ;;
+          esac
+
+          if [ "$target" = "x86_64-unknown-linux-musl" ] && [ "$(uname -m)" != "x86_64" ] && [ "$(uname -m)" != "amd64" ]; then
+            echo "This fork release only supports Linux x64." >&2
+            exit 1
+          fi
+
+          version="$(resolve_version)"
+          tag="rust-v$version"
+          asset="codex-package-$target.tar.gz"
+          base_url="https://github.com/$REPO/releases/download/$tag"
+          tmp_dir="$(mktemp -d)"
+          trap 'rm -rf "$tmp_dir"' EXIT INT TERM
+
+          mkdir -p "$BIN_DIR" "$RELEASES_DIR"
+          download_file "$base_url/codex-package_SHA256SUMS" "$tmp_dir/codex-package_SHA256SUMS"
+          expected="$(awk -v asset="$asset" '$2 == asset { print $1; found = 1 } END { if (!found) exit 1 }' "$tmp_dir/codex-package_SHA256SUMS")"
+          download_file "$base_url/$asset" "$tmp_dir/$asset"
+          actual="$(file_sha256 "$tmp_dir/$asset")"
+          if [ "$actual" != "$expected" ]; then
+            echo "Checksum mismatch for $asset." >&2
+            echo "expected: $expected" >&2
+            echo "actual:   $actual" >&2
+            exit 1
+          fi
+
+          release_dir="$RELEASES_DIR/$version-$target"
+          rm -rf "$release_dir"
+          mkdir -p "$release_dir"
+          tar -C "$release_dir" -xzf "$tmp_dir/$asset"
+
+          ln -sfn "$release_dir" "$CURRENT_LINK"
+          ln -sfn "$release_dir/bin/$PACKAGE_BIN_NAME" "$BIN_DIR/$BIN_NAME"
+          ln -sfn "$release_dir/bin/codex-code-mode-host" "$BIN_DIR/codex-code-mode-host"
+          echo "Installed $BIN_NAME $version for $target at $release_dir"
+          echo "Ensure $BIN_DIR is on your PATH."
+          INSTALL_SCRIPT
+          sed -i "s#__RELEASE_REPOSITORY__#${RELEASE_REPOSITORY}#g" dist/install-fork.sh
+          chmod +x dist/install-fork.sh
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@153bb8e04406b158c6c84fc1615b65b24149a1fe # v2.6.1
+        with:
+          name: ${{ needs.metadata.outputs.version }}
+          tag_name: ${{ needs.metadata.outputs.tag }}
+          target_commitish: ${{ github.sha }}
+          generate_release_notes: true
+          files: dist/**
+          overwrite_files: true
+          make_latest: ${{ ! inputs.prerelease }}
+          prerelease: ${{ inputs.prerelease }}
