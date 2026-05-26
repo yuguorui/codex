@@ -1,0 +1,219 @@
+name: fork-auto-rebase
+
+on:
+  schedule:
+    # UTC 18:00 = Asia/Shanghai 02:00.
+    - cron: "0 18 * * *"
+  workflow_dispatch:
+
+concurrency:
+  group: fork-auto-rebase
+  cancel-in-progress: false
+
+permissions:
+  actions: write
+  contents: write
+
+jobs:
+  rebase:
+    name: Rebase fork on upstream
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          ref: main
+          fetch-depth: 0
+          persist-credentials: true
+
+      - name: Configure Git
+        id: setup
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git remote add upstream https://github.com/openai/codex.git
+          echo "pre_rebase_sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+
+      - name: Check for new upstream commits
+        id: check
+        shell: bash
+        run: |
+          set -euo pipefail
+          git fetch upstream main
+
+          if git merge-base --is-ancestor upstream/main HEAD; then
+            echo "No new upstream commits; nothing to push."
+            echo "has_changes=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "has_changes=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Download Codex++ fork binary
+        if: steps.check.outputs.has_changes == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          tag="$(gh release view -R yuguorui/codex-plus --json tagName -q '.tagName')"
+          asset="codex-package-x86_64-unknown-linux-musl.tar.gz"
+
+          tmp_dir="$(mktemp -d)"
+          gh release download "$tag" -R yuguorui/codex-plus -p "$asset" --dir "$tmp_dir"
+          mkdir -p "$tmp_dir/extract"
+          tar -xzf "$tmp_dir/$asset" -C "$tmp_dir/extract"
+
+          BIN_DIR="/tmp/codexpp-bin"
+          mkdir -p "$BIN_DIR"
+          for binary in codex++ codex-code-mode-host; do
+            binary_path="$(find "$tmp_dir/extract" -name "$binary" -type f -print -quit)"
+            if [[ -z "$binary_path" ]]; then
+              echo "Release package is missing $binary." >&2
+              exit 1
+            fi
+            cp "$binary_path" "$BIN_DIR/$binary"
+            chmod +x "$BIN_DIR/$binary"
+          done
+          echo "$BIN_DIR" >> "$GITHUB_PATH"
+          rm -rf "$tmp_dir"
+
+      - name: Verify Codex++ runtime
+        if: steps.check.outputs.has_changes == 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          for binary in codex++ codex-code-mode-host; do
+            binary_path="$(command -v "$binary")"
+            if [[ ! -x "$binary_path" ]]; then
+              echo "$binary is not executable: $binary_path" >&2
+              exit 1
+            fi
+          done
+
+          codex++ --version
+          codex-code-mode-host --help >/dev/null
+
+      - name: Install Linux dependencies for validation
+        if: steps.check.outputs.has_changes == 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo apt-get update -y
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+            libcap-dev \
+            pkg-config
+
+      - uses: dtolnay/rust-toolchain@e081816240890017053eacbb1bdf337761dc5582 # 1.95.0
+        if: steps.check.outputs.has_changes == 'true'
+
+      - uses: taiki-e/install-action@44c6d64aa62cd779e873306675c7a58e86d6d532 # v2.62.49
+        if: steps.check.outputs.has_changes == 'true'
+        with:
+          tool: just
+
+      - name: Configure rusty_v8 artifact overrides
+        if: steps.check.outputs.has_changes == 'true'
+        uses: ./.github/actions/setup-rusty-v8
+        with:
+          target: x86_64-unknown-linux-gnu
+
+      - name: Rebase and validate with Codex++ (DeepSeek Anthropic)
+        if: steps.check.outputs.has_changes == 'true'
+        env:
+          DEEPSEEK_ANTHROPIC_API_KEY: ${{ secrets.DEEPSEEK_ANTHROPIC_API_KEY }}
+          DEEPSEEK_ANTHROPIC_BASE_URL: ${{ secrets.DEEPSEEK_ANTHROPIC_BASE_URL }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          codex++ exec \
+            --model deepseek-v4-pro \
+            --ephemeral \
+            --dangerously-bypass-approvals-and-sandbox \
+            -c 'model_provider="deepseek-anthropic"' \
+            -c 'model_providers.deepseek-anthropic.name="DeepSeek Anthropic"' \
+            -c 'model_providers.deepseek-anthropic.env_base_url="DEEPSEEK_ANTHROPIC_BASE_URL"' \
+            -c 'model_providers.deepseek-anthropic.env_key="DEEPSEEK_ANTHROPIC_API_KEY"' \
+            -c 'model_providers.deepseek-anthropic.wire_api="anthropic"' \
+            -c 'model_context_window=1000000' \
+            "This is Codex++ (a fork of openai/codex) running with the DeepSeek V4 Pro
+          model via Anthropic Messages API.
+
+          Rebase this fork on upstream/main, run the compile check yourself,
+          and fix any compile errors before the workflow pushes the result.
+
+          Complete the rebase safely:
+          - Inspect \`git status --short --branch\` and the fork-local commits
+            that will be replayed on top of upstream/main.
+          - Run \`git rebase upstream/main\`.
+          - If there are conflicts, preserve fork-local Codex++ behavior and
+            upstream openai/codex behavior; do not discard unrelated changes.
+          - Resolve conflicts by editing files directly, stage resolved files
+            with \`git add\`, and continue with
+            \`GIT_EDITOR=true git rebase --continue\`. Repeat until complete.
+          - Run \`cd codex-rs && just fmt\`.
+          - Run \`cd codex-rs && cargo check --bin codex --bin codex-responses-api-proxy\`.
+          - Treat compiler, formatter, API, type, schema, or behavior failures
+            as upstream rebase drift. Fix them before finishing.
+          - If validation or formatting modifies files after the rebase
+            completes, inspect the diff and keep the fork commit history clean.
+            If a change belongs to the commit currently being replayed, stage
+            the intended changes and use \`git commit --amend --no-edit\`. If it
+            belongs to a different existing fork commit, identify that target
+            commit with \`git log\` or \`git blame\`, stage only those changes,
+            run \`git commit --fixup=<commit>\`, then fold it in with
+            \`GIT_SEQUENCE_EDITOR=: git rebase -i --autosquash upstream/main\`.
+            Do not leave standalone rebase-drift fix commits.
+          - Do not push.
+
+          If the rebase or validation is ambiguous or cannot be repaired safely,
+          stop and explain the blocker in your final message."
+
+      - name: Verify rebase completed
+        if: steps.check.outputs.has_changes == 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          if [[ -d .git/rebase-merge || -d .git/rebase-apply ]]; then
+            echo "Rebase is still in progress."
+            git status --short --branch
+            exit 1
+          fi
+
+          if git status --porcelain=v1 -uall | grep -q .; then
+            echo "Working tree is not clean after rebase."
+            git status --short
+            exit 1
+          fi
+
+      - name: Validate rebased fork
+        id: validate
+        if: steps.check.outputs.has_changes == 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd codex-rs
+          cargo fmt --check
+          cargo check --workspace --all-targets
+          cargo build --release --bin codex --bin codex-responses-api-proxy
+
+      - name: Push rebased fork branch
+        id: push
+        if: steps.check.outputs.has_changes == 'true' && steps.validate.outcome == 'success'
+        shell: bash
+        run: |
+          set -euo pipefail
+          git push --force-with-lease origin HEAD:main
+          echo "pushed=true" >> "$GITHUB_OUTPUT"
+
+      - name: Trigger fork release
+        if: steps.push.outputs.pushed == 'true' || github.event_name == 'workflow_dispatch'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          gh workflow run fork-release.yml -R yuguorui/codex-plus --ref main
