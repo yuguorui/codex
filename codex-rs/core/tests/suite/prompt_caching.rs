@@ -187,6 +187,7 @@ async fn prompt_tools_are_consistent_across_requests() -> anyhow::Result<()> {
         "update_plan",
         "request_user_input",
         "apply_patch",
+        "fuzz_view_edit",
         "view_image",
         "tool_search",
         "web_search",
