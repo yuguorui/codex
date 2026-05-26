@@ -179,6 +179,22 @@ impl ToolEmitter {
         }
     }
 
+    pub fn read(
+        command: Vec<String>,
+        cwd: PathUri,
+        source: ExecCommandSource,
+        name: String,
+        path: PathBuf,
+    ) -> Self {
+        let cmd = command.join(" ");
+        Self::Shell {
+            command,
+            cwd,
+            source,
+            parsed_cmd: vec![ParsedCommand::Read { cmd, name, path }],
+        }
+    }
+
     pub fn unified_exec(
         command: &[String],
         cwd: PathUri,
