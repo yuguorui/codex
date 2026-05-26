@@ -16,6 +16,7 @@ Codex++ extends the official [Codex CLI](https://github.com/openai/codex) with:
 - **Anthropic Messages API** (`wire_api = "anthropic"`) — use Claude models directly through Anthropic's native API.
 - **Auth header scheme control** (`env_key_auth`) — choose between `Bearer` and `x-api-key` auth per provider.
 - **Provider-specific request fields** (`extra_body`) — merge arbitrary JSON into request bodies for provider-specific features like `enable_thinking` or `thinking_budget`.
+- **Hashline edit tool** — edit code with hash anchors, best for non-openai models that don't support the OpenAI `apply_patch` edit tool.
 - **429 rate-limit retry** — automatic exponential backoff for rate-limited responses.
 
 For a detailed technical breakdown, see [`codex-rs/README.md`](./codex-rs/README.md).
