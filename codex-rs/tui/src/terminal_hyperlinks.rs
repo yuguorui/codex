@@ -148,7 +148,12 @@ pub(crate) fn prefix_hyperlink_lines(
         .into_iter()
         .enumerate()
         .map(|(index, mut line)| {
-            let prefix = if index == 0 {
+            // Check if line is blank (empty or only whitespace)
+            let is_blank = line.line.spans.iter().all(|span| span.content.trim().is_empty());
+
+            let prefix = if is_blank {
+                Span::raw("")
+            } else if index == 0 {
                 initial_prefix.clone()
             } else {
                 subsequent_prefix.clone()

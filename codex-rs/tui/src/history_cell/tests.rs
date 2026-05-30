@@ -980,11 +980,10 @@ fn mcp_tools_output_from_statuses_renders_verbose_inventory() {
 
     insta::assert_snapshot!(rendered);
 }
-
 #[test]
 fn empty_agent_message_cell_transcript() {
     let cell = AgentMessageCell::new(vec![Line::default()], /*is_first_line*/ false);
-    assert_eq!(cell.transcript_lines(/*width*/ 80), vec![Line::from("  ")]);
+    assert_eq!(cell.transcript_lines(/*width*/ 80), vec![Line::default()]);
     assert_eq!(cell.desired_transcript_height(/*width*/ 80), 1);
 }
 
@@ -2592,9 +2591,8 @@ fn streamed_agent_list_paragraph_preserves_item_indent_when_wrapped() {
 fn agent_markdown_cell_narrow_width_shows_prefix_only() {
     let source = "narrow width coverage\n";
     let cell = AgentMarkdownCell::new(source.to_string(), &test_cwd());
-
     let lines = render_lines(&cell.display_lines(/*width*/ 2));
-    assert_eq!(lines, vec!["• ".to_string()]);
+    assert_eq!(lines, vec!["".to_string()]);
 }
 
 #[test]
@@ -2769,5 +2767,67 @@ fn consolidation_walker_replaces_agent_message_cells() {
     assert!(
         transcript_cells[1].as_any().is::<AgentMarkdownCell>(),
         "second cell should be AgentMarkdownCell"
+    );
+}
+
+
+
+
+
+
+
+
+#[test]
+fn blank_lines_should_not_have_indent_prefix() {
+    // Minimal repro: blank lines in markdown should not get "  " indent prefix,
+    // because Paragraph::wrap splits "  " into 2 visual lines, causing content loss.
+    let source = "line1\n\nline2\n";
+    let rendered = crate::markdown::render_markdown_agent_with_links_and_cwd(
+        source,
+        Some(80),
+        None,
+    );
+
+    let cell = super::AgentMessageCell::new_hyperlink_lines(rendered, true);
+    let lines = cell.display_hyperlink_lines(80);
+
+    // Check that blank lines have empty prefix, not "  "
+    for (i, hl) in lines.iter().enumerate() {
+        let text: String = hl.line.spans.iter().map(|s| s.content.as_ref()).collect();
+        if text.trim().is_empty() {
+            // Blank line should have empty prefix, not "  "
+            assert!(
+                text.is_empty() || text == " ",
+                "Line {} is blank but has indent prefix {:?}. \
+                 Blank lines should have empty prefix to avoid Paragraph::wrap splitting them.",
+                i, text
+            );
+        }
+    }
+}
+
+#[test]
+fn blank_line_prefix_regression() {
+    // Minimal repro for double-wrap content loss bug
+    // Issue: Blank lines in markdown get "  " prefix, which Paragraph::wrap splits into 2 visual lines
+    // This causes scroll position mismatch between streaming and history rendering
+
+    let lines = vec![
+        Line::from("Line 1"),
+        Line::from(""),  // Blank line - should NOT get "  " prefix
+        Line::from("Line 2"),
+    ];
+
+    let cell = AgentMessageCell::new(lines, /*is_first_line*/ true);
+    let rendered = cell.display_hyperlink_lines(80);
+
+    // Verify blank lines have empty prefix
+    let blank_line = &rendered[1];
+    let text: String = blank_line.line.spans.iter().map(|s| s.content.as_ref()).collect();
+
+    assert!(
+        text.is_empty(),
+        "Blank line should have empty prefix, got: {:?}",
+        text
     );
 }
