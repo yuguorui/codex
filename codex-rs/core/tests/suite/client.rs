@@ -1466,6 +1466,7 @@ async fn send_provider_auth_request(server: &MockServer, auth: ModelProviderAuth
     let provider = ModelProviderInfo {
         name: "corp".into(),
         base_url: Some(format!("{}/v1", server.uri())),
+        env_base_url: None,
         env_key: None,
         env_key_auth: None,
         env_key_instructions: None,
@@ -2960,6 +2961,7 @@ async fn azure_responses_request_does_not_store_and_preserves_prefixed_item_ids(
     let provider = ModelProviderInfo {
         name: "azure".into(),
         base_url: Some(format!("{}/openai", server.uri())),
+        env_base_url: None,
         env_key: None,
         env_key_auth: None,
         env_key_instructions: None,
@@ -3653,6 +3655,7 @@ async fn azure_overrides_assign_properties_used_for_responses_url() {
     let provider = ModelProviderInfo {
         name: "custom".to_string(),
         base_url: Some(format!("{}/openai", server.uri())),
+        env_base_url: None,
         // Reuse the existing environment variable to avoid using unsafe code
         env_key: Some(EXISTING_ENV_VAR_WITH_NON_EMPTY_VALUE.to_string()),
         env_key_auth: None,
@@ -3742,6 +3745,7 @@ async fn env_var_overrides_loaded_auth() {
     let provider = ModelProviderInfo {
         name: ModelProviderInfo::create_openai_provider(/*base_url*/ None).name,
         base_url: Some(format!("{}/openai", server.uri())),
+        env_base_url: None,
         // Reuse the existing environment variable to avoid using unsafe code
         env_key: Some(EXISTING_ENV_VAR_WITH_NON_EMPTY_VALUE.to_string()),
         env_key_auth: None,
