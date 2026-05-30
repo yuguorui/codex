@@ -149,7 +149,11 @@ pub(crate) fn prefix_hyperlink_lines(
         .enumerate()
         .map(|(index, mut line)| {
             // Check if line is blank (empty or only whitespace)
-            let is_blank = line.line.spans.iter().all(|span| span.content.trim().is_empty());
+            let is_blank = line
+                .line
+                .spans
+                .iter()
+                .all(|span| span.content.trim().is_empty());
 
             let prefix = if is_blank {
                 Span::raw("")
