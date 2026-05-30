@@ -319,12 +319,21 @@ impl HistoryCell for AgentMessageCell {
     fn display_hyperlink_lines(&self, width: u16) -> Vec<HyperlinkLine> {
         let mut wrapped = Vec::new();
         for (index, line) in self.lines.iter().enumerate() {
-            let initial_indent = if index == 0 && self.is_first_line {
+            // Check if line is blank (empty or only whitespace)
+            let is_blank = line.line.spans.iter().all(|span| span.content.trim().is_empty());
+
+            let initial_indent = if is_blank {
+                Line::from("")
+            } else if index == 0 && self.is_first_line {
                 "• ".dim().into()
             } else {
                 "  ".into()
             };
-            let mut subsequent_indent = Line::from("  ");
+            let mut subsequent_indent = if is_blank {
+                Line::from("")
+            } else {
+                Line::from("  ")
+            };
             subsequent_indent
                 .spans
                 .extend(crate::insert_history::leading_whitespace_prefix(&line.line).spans);
