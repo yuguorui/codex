@@ -320,7 +320,11 @@ impl HistoryCell for AgentMessageCell {
         let mut wrapped = Vec::new();
         for (index, line) in self.lines.iter().enumerate() {
             // Check if line is blank (empty or only whitespace)
-            let is_blank = line.line.spans.iter().all(|span| span.content.trim().is_empty());
+            let is_blank = line
+                .line
+                .spans
+                .iter()
+                .all(|span| span.content.trim().is_empty());
 
             let initial_indent = if is_blank {
                 Line::from("")

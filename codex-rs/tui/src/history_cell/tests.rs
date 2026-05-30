@@ -2770,23 +2770,13 @@ fn consolidation_walker_replaces_agent_message_cells() {
     );
 }
 
-
-
-
-
-
-
-
 #[test]
 fn blank_lines_should_not_have_indent_prefix() {
     // Minimal repro: blank lines in markdown should not get "  " indent prefix,
     // because Paragraph::wrap splits "  " into 2 visual lines, causing content loss.
     let source = "line1\n\nline2\n";
-    let rendered = crate::markdown::render_markdown_agent_with_links_and_cwd(
-        source,
-        Some(80),
-        None,
-    );
+    let rendered =
+        crate::markdown::render_markdown_agent_with_links_and_cwd(source, Some(80), None);
 
     let cell = super::AgentMessageCell::new_hyperlink_lines(rendered, true);
     let lines = cell.display_hyperlink_lines(80);
@@ -2800,7 +2790,8 @@ fn blank_lines_should_not_have_indent_prefix() {
                 text.is_empty() || text == " ",
                 "Line {} is blank but has indent prefix {:?}. \
                  Blank lines should have empty prefix to avoid Paragraph::wrap splitting them.",
-                i, text
+                i,
+                text
             );
         }
     }
@@ -2814,7 +2805,7 @@ fn blank_line_prefix_regression() {
 
     let lines = vec![
         Line::from("Line 1"),
-        Line::from(""),  // Blank line - should NOT get "  " prefix
+        Line::from(""), // Blank line - should NOT get "  " prefix
         Line::from("Line 2"),
     ];
 
@@ -2823,7 +2814,12 @@ fn blank_line_prefix_regression() {
 
     // Verify blank lines have empty prefix
     let blank_line = &rendered[1];
-    let text: String = blank_line.line.spans.iter().map(|s| s.content.as_ref()).collect();
+    let text: String = blank_line
+        .line
+        .spans
+        .iter()
+        .map(|s| s.content.as_ref())
+        .collect();
 
     assert!(
         text.is_empty(),
