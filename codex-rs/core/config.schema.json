@@ -1809,6 +1809,10 @@
           "description": "Base URL for the provider's OpenAI-compatible API.",
           "type": "string"
         },
+        "env_base_url": {
+          "description": "Environment variable whose value overrides `base_url` when set and non-empty.",
+          "type": "string"
+        },
         "env_extra_headers": {
           "additionalProperties": {
             "type": "string"
