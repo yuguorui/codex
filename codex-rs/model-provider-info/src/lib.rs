@@ -149,6 +149,9 @@ pub struct ModelProviderInfo {
     pub name: String,
     /// Base URL for the provider's OpenAI-compatible API.
     pub base_url: Option<String>,
+    /// Environment variable whose value overrides `base_url` when set and
+    /// non-empty.
+    pub env_base_url: Option<String>,
     /// Environment variable that stores the user's API key for this provider.
     pub env_key: Option<String>,
     /// Auth header scheme to use for the API key loaded from `env_key`.
@@ -334,6 +337,11 @@ impl ModelProviderInfo {
         let base_url = self
             .base_url
             .clone()
+            .or_else(|| {
+                self.env_base_url.as_ref().and_then(|env_key| {
+                    std::env::var(env_key).ok().filter(|v| !v.trim().is_empty())
+                })
+            })
             .unwrap_or_else(|| default_base_url.to_string());
 
         let headers = self.build_header_map()?;
@@ -419,6 +427,7 @@ impl ModelProviderInfo {
         ModelProviderInfo {
             name: OPENAI_PROVIDER_NAME.into(),
             base_url,
+            env_base_url: None,
             env_key: None,
             env_key_auth: None,
             env_key_instructions: None,
@@ -463,10 +472,8 @@ impl ModelProviderInfo {
     ) -> ModelProviderInfo {
         ModelProviderInfo {
             name: AMAZON_BEDROCK_PROVIDER_NAME.into(),
-            // The runtime provider derives the regional Mantle endpoint when
-            // this is unset. A configured value is therefore unambiguously an
-            // endpoint override.
             base_url: None,
+            env_base_url: None,
             env_key: None,
             env_key_auth: None,
             env_key_instructions: None,
@@ -635,6 +642,7 @@ pub fn create_oss_provider_with_base_url(base_url: &str, wire_api: WireApi) -> M
     ModelProviderInfo {
         name: "gpt-oss".into(),
         base_url: Some(base_url.into()),
+        env_base_url: None,
         env_key: None,
         env_key_auth: None,
         env_key_instructions: None,
