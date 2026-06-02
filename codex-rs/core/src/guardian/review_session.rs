@@ -168,8 +168,10 @@ fn token_usage_delta(start: &TokenUsage, end: &TokenUsage) -> TokenUsage {
     TokenUsage {
         input_tokens: (end.input_tokens - start.input_tokens).max(0),
         cached_input_tokens: (end.cached_input_tokens - start.cached_input_tokens).max(0),
-        cache_write_input_tokens: (end.cache_write_input_tokens - start.cache_write_input_tokens)
+        cache_creation_input_tokens: (end.cache_creation_input_tokens
+            - start.cache_creation_input_tokens)
             .max(0),
+        cache_write_input_tokens: 0,
         output_tokens: (end.output_tokens - start.output_tokens).max(0),
         reasoning_output_tokens: (end.reasoning_output_tokens - start.reasoning_output_tokens)
             .max(0),
@@ -1739,6 +1741,7 @@ async fn interrupt_and_drain_turn(
     Ok(())
 }
 
+#[cfg(test)]
 #[cfg(test)]
 #[path = "review_session_tests.rs"]
 mod tests;
