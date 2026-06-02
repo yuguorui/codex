@@ -685,9 +685,10 @@ impl Session {
                 cached_input_tokens: (total_token_usage.cached_input_tokens
                     - token_usage_at_turn_start.cached_input_tokens)
                     .max(0),
-                cache_write_input_tokens: (total_token_usage.cache_write_input_tokens
-                    - token_usage_at_turn_start.cache_write_input_tokens)
+                cache_creation_input_tokens: (total_token_usage.cache_creation_input_tokens
+                    - token_usage_at_turn_start.cache_creation_input_tokens)
                     .max(0),
+                cache_write_input_tokens: 0,
                 output_tokens: (total_token_usage.output_tokens
                     - token_usage_at_turn_start.output_tokens)
                     .max(0),
