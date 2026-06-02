@@ -801,6 +801,7 @@ async fn active_thread_drain_yields_after_frame_deadline_without_dropping_events
             cached_input_tokens: 1,
             output_tokens: 5,
             reasoning_output_tokens: 0,
+            cache_creation_input_tokens: 0,
             total_tokens: 10,
         }
     );
@@ -829,6 +830,7 @@ async fn active_thread_drain_yields_after_frame_deadline_without_dropping_events
             cached_input_tokens: 1,
             output_tokens: 10,
             reasoning_output_tokens: 0,
+            cache_creation_input_tokens: 0,
             total_tokens: 15,
         }
     );
@@ -6304,6 +6306,7 @@ fn token_usage_notification(
                 total_tokens: 10,
                 input_tokens: 4,
                 cached_input_tokens: 1,
+                cache_creation_input_tokens: 0,
                 cache_write_input_tokens: 0,
                 output_tokens: 5,
                 reasoning_output_tokens: 0,
@@ -6313,6 +6316,7 @@ fn token_usage_notification(
                 input_tokens: 4,
                 cached_input_tokens: 1,
                 cache_write_input_tokens: 0,
+                cache_creation_input_tokens: 0,
                 output_tokens: 5,
                 reasoning_output_tokens: 0,
             },
