@@ -305,6 +305,7 @@ async fn thread_compact_start_triggers_compaction_and_returns_empty_response() -
                 input_tokens: 200,
                 cached_input_tokens: 0,
                 cache_write_input_tokens: 0,
+                cache_creation_input_tokens: 0,
                 output_tokens: 0,
                 reasoning_output_tokens: 0,
             }),
