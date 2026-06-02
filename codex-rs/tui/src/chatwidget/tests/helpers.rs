@@ -382,6 +382,7 @@ fn token_usage_breakdown(usage: TokenUsage) -> codex_app_server_protocol::TokenU
         input_tokens: usage.input_tokens,
         cached_input_tokens: usage.cached_input_tokens,
         cache_write_input_tokens: 0,
+        cache_creation_input_tokens: usage.cache_creation_input_tokens,
         output_tokens: usage.output_tokens,
         reasoning_output_tokens: usage.reasoning_output_tokens,
     }
