@@ -316,9 +316,10 @@ fn token_delta_since_last_accounting(last: &TokenUsage, current: &TokenUsage) ->
         cached_input_tokens: current
             .cached_input_tokens
             .saturating_sub(last.cached_input_tokens),
-        cache_write_input_tokens: current
-            .cache_write_input_tokens
-            .saturating_sub(last.cache_write_input_tokens),
+        cache_creation_input_tokens: current
+            .cache_creation_input_tokens
+            .saturating_sub(last.cache_creation_input_tokens),
+        cache_write_input_tokens: 0,
         output_tokens: current.output_tokens.saturating_sub(last.output_tokens),
         reasoning_output_tokens: current
             .reasoning_output_tokens
