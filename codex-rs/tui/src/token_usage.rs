@@ -12,6 +12,7 @@ const BASELINE_TOKENS: i64 = 12000;
 pub struct TokenUsage {
     pub input_tokens: i64,
     pub cached_input_tokens: i64,
+    pub cache_creation_input_tokens: i64,
     pub output_tokens: i64,
     pub reasoning_output_tokens: i64,
     pub total_tokens: i64,
