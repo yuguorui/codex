@@ -17,6 +17,8 @@ use codex_protocol::protocol::SessionMeta;
 use codex_protocol::protocol::SessionMetaLine;
 use codex_protocol::protocol::SessionSource;
 use codex_protocol::protocol::ThreadHistoryMode;
+use codex_protocol::protocol::TokenUsage;
+use codex_protocol::protocol::TokenUsageInfo;
 use codex_protocol::protocol::TurnContextItem;
 use codex_protocol::protocol::UserMessageEvent;
 use codex_utils_absolute_path::test_support::PathExt;
@@ -323,6 +325,95 @@ async fn load_rollout_items_defaults_legacy_session_id() -> std::io::Result<()> 
         items[1],
         RolloutItem::ResponseItem(ResponseItem::Message { .. })
     ));
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn load_rollout_items_defaults_legacy_token_usage_fields() -> std::io::Result<()> {
+    let home = TempDir::new().expect("temp dir");
+    let rollout_path = home.path().join("rollout.jsonl");
+    let mut file = File::create(&rollout_path)?;
+    let thread_id = ThreadId::new();
+    let ts = "2025-01-03T12:00:00Z";
+
+    writeln!(
+        file,
+        "{}",
+        serde_json::json!({
+            "timestamp": ts,
+            "type": "session_meta",
+            "payload": {
+                "id": thread_id,
+                "timestamp": ts,
+                "cwd": ".",
+                "originator": "test_originator",
+                "cli_version": "test_version",
+                "source": "cli",
+                "model_provider": "test-provider",
+            },
+        })
+    )?;
+    writeln!(
+        file,
+        "{}",
+        serde_json::json!({
+            "timestamp": ts,
+            "type": "event_msg",
+            "payload": {
+                "type": "token_count",
+                "info": {
+                    "total_token_usage": {
+                        "input_tokens": 10,
+                        "cached_input_tokens": 2,
+                        "output_tokens": 3,
+                        "reasoning_output_tokens": 1,
+                        "total_tokens": 13,
+                    },
+                    "last_token_usage": {
+                        "input_tokens": 10,
+                        "cached_input_tokens": 2,
+                        "output_tokens": 3,
+                        "reasoning_output_tokens": 1,
+                        "total_tokens": 13,
+                    },
+                    "model_context_window": 128000,
+                },
+                "rate_limits": null,
+            },
+        })
+    )?;
+
+    let (items, loaded_thread_id, parse_errors) =
+        RolloutRecorder::load_rollout_items(&rollout_path).await?;
+
+    assert_eq!(loaded_thread_id, Some(thread_id));
+    assert_eq!(parse_errors, 0);
+    let RolloutItem::EventMsg(EventMsg::TokenCount(event)) = &items[1] else {
+        panic!("expected token count event");
+    };
+    assert_eq!(
+        event.info,
+        Some(TokenUsageInfo {
+            total_token_usage: TokenUsage {
+                input_tokens: 10,
+                cached_input_tokens: 2,
+                output_tokens: 3,
+                reasoning_output_tokens: 1,
+                total_tokens: 13,
+                ..TokenUsage::default()
+            },
+            last_token_usage: TokenUsage {
+                input_tokens: 10,
+                cached_input_tokens: 2,
+                output_tokens: 3,
+                reasoning_output_tokens: 1,
+                total_tokens: 13,
+                ..TokenUsage::default()
+            },
+            model_context_window: Some(128_000),
+        })
+    );
 
     Ok(())
 }

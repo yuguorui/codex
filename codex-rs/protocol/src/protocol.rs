@@ -2061,6 +2061,9 @@ pub struct TokenUsage {
     #[serde(default)]
     #[ts(type = "number")]
     pub cache_write_input_tokens: i64,
+    #[serde(default)]
+    #[ts(type = "number")]
+    pub cache_creation_input_tokens: i64,
     #[ts(type = "number")]
     pub output_tokens: i64,
     #[ts(type = "number")]
@@ -2262,6 +2265,7 @@ impl TokenUsage {
         self.input_tokens += other.input_tokens;
         self.cached_input_tokens += other.cached_input_tokens;
         self.cache_write_input_tokens += other.cache_write_input_tokens;
+        self.cache_creation_input_tokens += other.cache_creation_input_tokens;
         self.output_tokens += other.output_tokens;
         self.reasoning_output_tokens += other.reasoning_output_tokens;
         self.total_tokens += other.total_tokens;
@@ -6284,6 +6288,7 @@ mod tests {
         let last = Some(TokenUsage {
             input_tokens: 10,
             cached_input_tokens: 0,
+            cache_creation_input_tokens: 0,
             cache_write_input_tokens: 0,
             output_tokens: 0,
             reasoning_output_tokens: 0,
@@ -6297,6 +6302,43 @@ mod tests {
     }
 
     #[test]
+    fn token_usage_add_assign_accumulates_all_token_counts() {
+        let mut total = TokenUsage {
+            input_tokens: 1,
+            cached_input_tokens: 2,
+            cache_write_input_tokens: 3,
+            cache_creation_input_tokens: 4,
+            output_tokens: 5,
+            reasoning_output_tokens: 6,
+            total_tokens: 7,
+        };
+        let additional = TokenUsage {
+            input_tokens: 10,
+            cached_input_tokens: 20,
+            cache_write_input_tokens: 30,
+            cache_creation_input_tokens: 40,
+            output_tokens: 50,
+            reasoning_output_tokens: 60,
+            total_tokens: 70,
+        };
+
+        total.add_assign(&additional);
+
+        assert_eq!(
+            total,
+            TokenUsage {
+                input_tokens: 11,
+                cached_input_tokens: 22,
+                cache_write_input_tokens: 33,
+                cache_creation_input_tokens: 44,
+                output_tokens: 55,
+                reasoning_output_tokens: 66,
+                total_tokens: 77,
+            }
+        );
+    }
+
+    #[test]
     fn token_usage_info_new_or_append_preserves_context_window_when_not_provided() {
         let initial = Some(TokenUsageInfo {
             total_token_usage: TokenUsage::default(),
@@ -6306,6 +6348,7 @@ mod tests {
         let last = Some(TokenUsage {
             input_tokens: 10,
             cached_input_tokens: 0,
+            cache_creation_input_tokens: 0,
             cache_write_input_tokens: 0,
             output_tokens: 0,
             reasoning_output_tokens: 0,
