@@ -205,6 +205,67 @@ fn turn_defaults_legacy_missing_items_view_to_full() {
 }
 
 #[test]
+fn thread_token_usage_notification_defaults_legacy_cache_creation_tokens() {
+    let notification = serde_json::from_value::<ServerNotification>(json!({
+        "method": "thread/tokenUsage/updated",
+        "params": {
+            "threadId": "thr_123",
+            "turnId": "turn_123",
+            "tokenUsage": {
+                "total": {
+                    "totalTokens": 13,
+                    "inputTokens": 10,
+                    "cachedInputTokens": 2,
+                    "outputTokens": 3,
+                    "reasoningOutputTokens": 1,
+                },
+                "last": {
+                    "totalTokens": 13,
+                    "inputTokens": 10,
+                    "cachedInputTokens": 2,
+                    "outputTokens": 3,
+                    "reasoningOutputTokens": 1,
+                },
+                "modelContextWindow": 128000,
+            },
+        },
+    }))
+    .expect("legacy token usage notification should deserialize");
+
+    let ServerNotification::ThreadTokenUsageUpdated(notification) = notification else {
+        panic!("expected thread token usage notification");
+    };
+    assert_eq!(
+        notification,
+        ThreadTokenUsageUpdatedNotification {
+            thread_id: "thr_123".to_string(),
+            turn_id: "turn_123".to_string(),
+            token_usage: ThreadTokenUsage {
+                total: TokenUsageBreakdown {
+                    total_tokens: 13,
+                    input_tokens: 10,
+                    cached_input_tokens: 2,
+                    output_tokens: 3,
+                    reasoning_output_tokens: 1,
+                    cache_write_input_tokens: 0,
+                    cache_creation_input_tokens: 0,
+                },
+                last: TokenUsageBreakdown {
+                    total_tokens: 13,
+                    input_tokens: 10,
+                    cached_input_tokens: 2,
+                    output_tokens: 3,
+                    reasoning_output_tokens: 1,
+                    cache_write_input_tokens: 0,
+                    cache_creation_input_tokens: 0,
+                },
+                model_context_window: Some(128_000),
+            },
+        }
+    );
+}
+
+#[test]
 fn thread_turns_list_params_accepts_items_view() {
     let params = serde_json::from_value::<ThreadTurnsListParams>(json!({
         "threadId": "thr_123",
