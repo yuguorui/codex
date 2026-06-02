@@ -2584,6 +2584,7 @@ async fn record_initial_history_seeds_token_info_from_rollout() {
         total_token_usage: TokenUsage {
             input_tokens: 10,
             cached_input_tokens: 0,
+            cache_creation_input_tokens: 0,
             cache_write_input_tokens: 0,
             output_tokens: 20,
             reasoning_output_tokens: 0,
@@ -2592,6 +2593,7 @@ async fn record_initial_history_seeds_token_info_from_rollout() {
         last_token_usage: TokenUsage {
             input_tokens: 3,
             cached_input_tokens: 0,
+            cache_creation_input_tokens: 0,
             cache_write_input_tokens: 0,
             output_tokens: 4,
             reasoning_output_tokens: 0,
@@ -2603,6 +2605,7 @@ async fn record_initial_history_seeds_token_info_from_rollout() {
         total_token_usage: TokenUsage {
             input_tokens: 100,
             cached_input_tokens: 50,
+            cache_creation_input_tokens: 0,
             cache_write_input_tokens: 0,
             output_tokens: 200,
             reasoning_output_tokens: 25,
@@ -2611,6 +2614,7 @@ async fn record_initial_history_seeds_token_info_from_rollout() {
         last_token_usage: TokenUsage {
             input_tokens: 10,
             cached_input_tokens: 0,
+            cache_creation_input_tokens: 0,
             cache_write_input_tokens: 0,
             output_tokens: 20,
             reasoning_output_tokens: 5,
@@ -2780,6 +2784,7 @@ async fn record_token_usage_info_notifies_extension_contributors() {
     let first_usage = TokenUsage {
         input_tokens: 10,
         cached_input_tokens: 2,
+        cache_creation_input_tokens: 0,
         cache_write_input_tokens: 0,
         output_tokens: 20,
         reasoning_output_tokens: 3,
@@ -2788,6 +2793,7 @@ async fn record_token_usage_info_notifies_extension_contributors() {
     let second_usage = TokenUsage {
         input_tokens: 7,
         cached_input_tokens: 1,
+        cache_creation_input_tokens: 0,
         cache_write_input_tokens: 0,
         output_tokens: 8,
         reasoning_output_tokens: 5,
@@ -2908,6 +2914,7 @@ async fn turn_start_lifecycle_exposes_turn_metadata_and_token_baseline() {
     let token_usage_at_turn_start = TokenUsage {
         input_tokens: 100,
         cached_input_tokens: 40,
+        cache_creation_input_tokens: 0,
         cache_write_input_tokens: 0,
         output_tokens: 25,
         reasoning_output_tokens: 5,
