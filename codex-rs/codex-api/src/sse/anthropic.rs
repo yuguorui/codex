@@ -242,6 +242,7 @@ impl AnthropicStreamState {
         }
         if let Some(cache_creation_input_tokens) = usage.cache_creation_input_tokens {
             self.cache_creation_input_tokens = cache_creation_input_tokens;
+            self.token_usage.cache_creation_input_tokens = cache_creation_input_tokens;
         }
         if let Some(cached_input_tokens) = usage.cache_read_input_tokens {
             self.token_usage.cached_input_tokens = cached_input_tokens;
@@ -730,6 +731,7 @@ mod tests {
             Some(ResponseEvent::Completed { token_usage: Some(usage), .. })
                 if usage.input_tokens == 60
                     && usage.cached_input_tokens == 30
+                    && usage.cache_creation_input_tokens == 20
                     && usage.output_tokens == 2
                     && usage.total_tokens == 62
         );
