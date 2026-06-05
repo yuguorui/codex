@@ -223,7 +223,7 @@ mod tests {
         );
         assert_eq!(
             request.body.as_ref().and_then(RequestBody::json),
-            Some(&json!({
+            Some(json!({
                 "prompt": "a red fox in a field",
                 "background": "opaque",
                 "model": "gpt-image-1.5",
@@ -262,7 +262,7 @@ mod tests {
         assert_eq!(request.url, "https://example.com/api/codex/images/edits");
         assert_eq!(
             request.body.as_ref().and_then(RequestBody::json),
-            Some(&json!({
+            Some(json!({
                 "images": [{"image_url": "data:image/png;base64,Zm9v"}],
                 "prompt": "add a red hat",
                 "model": "gpt-image-1.5",
