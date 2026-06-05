@@ -53,10 +53,11 @@ pub enum RequestBody {
 }
 
 impl RequestBody {
-    pub fn json(&self) -> Option<&Value> {
+    pub fn json(&self) -> Option<Value> {
         match self {
-            Self::Json(value) => Some(value),
-            Self::EncodedJson(_) | Self::Raw(_) => None,
+            Self::Json(value) => Some(value.clone()),
+            Self::EncodedJson(encoded) => serde_json::from_slice(encoded.as_bytes()).ok(),
+            Self::Raw(_) => None,
         }
     }
 }

@@ -240,7 +240,7 @@ mod tests {
             .expect("request body should be JSON");
         assert_eq!(
             body,
-            &json!({
+            json!({
                 "id": "search-session",
                 "model": "gpt-test",
                 "input": [{
