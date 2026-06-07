@@ -21,6 +21,7 @@ jobs:
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
+          token: ${{ secrets.CODEX_PAT }}
           ref: main
           fetch-depth: 0
           persist-credentials: true
@@ -52,7 +53,7 @@ jobs:
       - name: Download Codex++ fork binary
         if: steps.check.outputs.has_changes == 'true'
         env:
-          GH_TOKEN: ${{ github.token }}
+          GH_TOKEN: ${{ secrets.CODEX_PAT }}
         shell: bash
         run: |
           set -euo pipefail
@@ -119,7 +120,7 @@ jobs:
         with:
           target: x86_64-unknown-linux-gnu
 
-      - name: Rebase and validate with Codex++ (DeepSeek Anthropic)
+      - name: Rebase with Codex++ (DeepSeek Anthropic)
         if: steps.check.outputs.has_changes == 'true'
         env:
           DEEPSEEK_ANTHROPIC_API_KEY: ${{ secrets.DEEPSEEK_ANTHROPIC_API_KEY }}
@@ -138,38 +139,38 @@ jobs:
             -c 'model_providers.deepseek-anthropic.env_key="DEEPSEEK_ANTHROPIC_API_KEY"' \
             -c 'model_providers.deepseek-anthropic.wire_api="anthropic"' \
             -c 'model_context_window=1000000' \
-            "This is Codex++ (a fork of openai/codex) running with the DeepSeek V4 Pro
-          model via Anthropic Messages API.
+            "Rebase this Codex++ fork onto \`upstream/main\`. Do not push.
 
-          Rebase this fork on upstream/main, run the compile check yourself,
-          and fix any compile errors before the workflow pushes the result.
+          1. Rebase
+          - Before rebasing, inspect the fork context:
+            \`git log --oneline upstream/main..HEAD\` lists commits unique to
+            this fork; \`git diff --stat upstream/main...HEAD\` shows the size
+            of its net changes; and \`git diff --name-only upstream/main...HEAD\`
+            lists affected files. Read the relevant diffs so you understand the
+            fork behavior that must be preserved.
+          - Then run \`git rebase upstream/main\`.
+          - Resolve conflicts without discarding fork behavior or unrelated
+            upstream changes. Continue until no rebase is in progress.
 
-          Complete the rebase safely:
-          - Inspect \`git status --short --branch\` and the fork-local commits
-            that will be replayed on top of upstream/main.
-          - Run \`git rebase upstream/main\`.
-          - If there are conflicts, preserve fork-local Codex++ behavior and
-            upstream openai/codex behavior; do not discard unrelated changes.
-          - Resolve conflicts by editing files directly, stage resolved files
-            with \`git add\`, and continue with
-            \`GIT_EDITOR=true git rebase --continue\`. Repeat until complete.
-          - Run \`cd codex-rs && just fmt\`.
-          - Run \`cd codex-rs && cargo check --bin codex --bin codex-responses-api-proxy\`.
-          - Treat compiler, formatter, API, type, schema, or behavior failures
-            as upstream rebase drift. Fix them before finishing.
-          - If validation or formatting modifies files after the rebase
-            completes, inspect the diff and keep the fork commit history clean.
-            If a change belongs to the commit currently being replayed, stage
-            the intended changes and use \`git commit --amend --no-edit\`. If it
-            belongs to a different existing fork commit, identify that target
-            commit with \`git log\` or \`git blame\`, stage only those changes,
-            run \`git commit --fixup=<commit>\`, then fold it in with
+          2. Repair and validate
+          - From \`codex-rs\`, repair compile errors with
+            \`cargo check --workspace --all-targets\`. Make manual, targeted
+            edits; do not use scripts or global replacements to mass-edit Rust
+            source. If the next repair is unclear, rerun \`cargo check\` and
+            follow its current diagnostics. Rerun until it passes.
+          - Before every commit (including fixups), run \`cargo fmt\` so no
+            unformatted code lands. Apply formatting and never judge success by
+            grepping \`cargo fmt --check\` output (that discards its exit code).
+          - Do not run a release build; the workflow performs it after you exit.
+
+          3. Finish cleanly
+          - Inspect \`git diff --check\`. Put every repair into its owning fork
+            commit with \`git commit --fixup=<commit>\`, then run
             \`GIT_SEQUENCE_EDITOR=: git rebase -i --autosquash upstream/main\`.
-            Do not leave standalone rebase-drift fix commits.
-          - Do not push.
+          - Finish only when \`git status --porcelain=v1 -uall\` has no output.
 
-          If the rebase or validation is ambiguous or cannot be repaired safely,
-          stop and explain the blocker in your final message."
+          If the rebase or validation cannot be repaired safely, stop and explain
+          the blocker in your final message."
 
       - name: Verify rebase completed
         if: steps.check.outputs.has_changes == 'true'
@@ -196,6 +197,9 @@ jobs:
         run: |
           set -euo pipefail
           cd codex-rs
+          # Gate: a non-zero exit fails this step (skips the push), so unformatted
+          # code can't ship. Judge by exit code only; do not pipe cargo fmt --check
+          # through grep/tail (that discards the exit code).
           cargo fmt --check
           cargo check --workspace --all-targets
           cargo build --release --bin codex --bin codex-responses-api-proxy
@@ -212,7 +216,7 @@ jobs:
       - name: Trigger fork release
         if: steps.push.outputs.pushed == 'true' || github.event_name == 'workflow_dispatch'
         env:
-          GH_TOKEN: ${{ github.token }}
+          GH_TOKEN: ${{ secrets.CODEX_PAT }}
         shell: bash
         run: |
           set -euo pipefail
