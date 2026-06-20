@@ -30,6 +30,7 @@ use crate::config_types::ReasoningSummary;
 use crate::config_types::SERVICE_TIER_DEFAULT_REQUEST_VALUE;
 use crate::config_types::ServiceTier;
 use crate::config_types::Verbosity;
+use crate::models::BASE_INSTRUCTIONS_DEFAULT;
 use crate::protocol::MultiAgentVersion;
 
 const PERSONALITY_PLACEHOLDER: &str = "{{ personality }}";
@@ -693,12 +694,11 @@ where
                 base_instructions,
                 mut model,
             } = legacy_model;
-            if let Some(base_instructions) = base_instructions
-                && model
-                    .model_messages
-                    .as_ref()
-                    .and_then(|messages| messages.instructions_template.as_ref())
-                    .is_none()
+            if model
+                .model_messages
+                .as_ref()
+                .and_then(|messages| messages.instructions_template.as_ref())
+                .is_none()
             {
                 let messages = model.model_messages.get_or_insert(ModelMessages {
                     instructions_template: None,
@@ -709,19 +709,9 @@ where
                     permissions: None,
                     token_budget: None,
                 });
-                messages.instructions_template = Some(base_instructions);
-            }
-            if model
-                .model_messages
-                .as_ref()
-                .and_then(|messages| messages.instructions_template.as_ref())
-                .is_none()
-            {
-                let model_slug = &model.slug;
-                return Err(D::Error::custom(format!(
-                    "model `{model_slug}` is missing both `base_instructions` and \
-                     `model_messages.instructions_template`"
-                )));
+                messages.instructions_template = Some(
+                    base_instructions.unwrap_or_else(|| BASE_INSTRUCTIONS_DEFAULT.to_string()),
+                );
             }
             Ok(model)
         })
@@ -1224,7 +1214,7 @@ mod tests {
     }
 
     #[test]
-    fn models_response_rejects_model_without_instruction_source() {
+    fn models_response_defaults_model_without_instruction_source() {
         let mut value = serde_json::to_value(ModelsResponse {
             models: vec![test_model(/*spec*/ None)],
         })
@@ -1235,13 +1225,29 @@ mod tests {
             .remove("base_instructions")
             .expect("serialized model should include legacy base instructions");
 
-        let error = serde_json::from_value::<ModelsResponse>(value)
-            .expect_err("model without instructions should be rejected");
+        let response = serde_json::from_value::<ModelsResponse>(value)
+            .expect("model without instructions should use the default");
 
         assert_eq!(
-            error.to_string(),
-            "model `test-model` is missing both `base_instructions` and \
-             `model_messages.instructions_template`"
+            response.models[0].get_model_instructions(/*personality*/ None),
+            BASE_INSTRUCTIONS_DEFAULT
+        );
+    }
+
+    #[test]
+    fn models_response_defaults_null_legacy_base_instructions() {
+        let mut value = serde_json::to_value(ModelsResponse {
+            models: vec![test_model(/*spec*/ None)],
+        })
+        .expect("serialize models response");
+        value["models"][0]["base_instructions"] = serde_json::Value::Null;
+
+        let response = serde_json::from_value::<ModelsResponse>(value)
+            .expect("null legacy instructions should use the default");
+
+        assert_eq!(
+            response.models[0].get_model_instructions(/*personality*/ None),
+            BASE_INSTRUCTIONS_DEFAULT
         );
     }
 
