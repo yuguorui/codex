@@ -32,6 +32,7 @@ use crate::config_types::ReasoningSummary;
 use crate::config_types::SERVICE_TIER_DEFAULT_REQUEST_VALUE;
 use crate::config_types::ServiceTier;
 use crate::config_types::Verbosity;
+use crate::models::BASE_INSTRUCTIONS_DEFAULT;
 use crate::protocol::MultiAgentVersion;
 
 #[path = "openai_models/guardian.rs"]
@@ -810,7 +811,8 @@ where
 }
 
 /// Deserializes catalog models while promoting the legacy top-level instruction field into Model
-/// Messages V2 when no canonical instruction template is present.
+/// Messages V2 when no canonical instruction template is present. Models that provide neither
+/// instruction source fall back to the generic Codex CLI instructions.
 #[doc(hidden)]
 pub fn deserialize_model_infos_with_legacy_base<'de, D>(
     deserializer: D,
@@ -826,40 +828,29 @@ where
                 base_instructions,
                 mut model,
             } = legacy_model;
+            let messages = model.model_messages.get_or_insert(ModelMessages {
+                persistent_instructions: None,
+                tools: None,
+                instructions_template: None,
+                instructions_variables: None,
+                approvals: None,
+                collaboration_modes: None,
+                auto_review: None,
+                permissions: None,
+                multi_agent: None,
+                token_budget: None,
+                guardian_v2: None,
+                confirmation_policies: None,
+            });
             if let Some(base_instructions) = base_instructions
-                && model
-                    .model_messages
-                    .as_ref()
-                    .and_then(|messages| messages.instructions_template.as_ref())
-                    .is_none()
+                && messages.instructions_template.is_none()
             {
-                let messages = model.model_messages.get_or_insert(ModelMessages {
-                    persistent_instructions: None,
-                    tools: None,
-                    instructions_template: None,
-                    instructions_variables: None,
-                    approvals: None,
-                    collaboration_modes: None,
-                    auto_review: None,
-                    permissions: None,
-                    multi_agent: None,
-                    token_budget: None,
-                    confirmation_policies: None,
-                    guardian_v2: None,
-                });
                 messages.instructions_template = Some(base_instructions);
             }
-            if model
-                .model_messages
-                .as_ref()
-                .and_then(|messages| messages.instructions_template.as_ref())
-                .is_none()
-            {
-                let model_slug = &model.slug;
-                return Err(D::Error::custom(format!(
-                    "model `{model_slug}` is missing both `base_instructions` and \
-                     `model_messages.instructions_template`"
-                )));
+            if messages.instructions_template.is_none() {
+                // Default to the generic Codex CLI instructions so third-party
+                // catalogs do not need to carry instructions per model.
+                messages.instructions_template = Some(BASE_INSTRUCTIONS_DEFAULT.to_string());
             }
             Ok(model)
         })
@@ -1507,7 +1498,7 @@ mod tests {
     }
 
     #[test]
-    fn models_response_rejects_model_without_instruction_source() {
+    fn models_response_defaults_model_without_instruction_source() {
         let mut value = serde_json::to_value(ModelsResponse {
             models: vec![test_model(/*spec*/ None)],
         })
@@ -1518,13 +1509,12 @@ mod tests {
             .remove("base_instructions")
             .expect("serialized model should include legacy base instructions");
 
-        let error = serde_json::from_value::<ModelsResponse>(value)
-            .expect_err("model without instructions should be rejected");
+        let response: ModelsResponse =
+            serde_json::from_value(value).expect("model without instructions should deserialize");
 
         assert_eq!(
-            error.to_string(),
-            "model `test-model` is missing both `base_instructions` and \
-             `model_messages.instructions_template`"
+            response.models[0].get_model_instructions(/*personality*/ None),
+            BASE_INSTRUCTIONS_DEFAULT
         );
     }
 
@@ -1911,6 +1901,43 @@ mod tests {
 
         let model = serde_json::from_value::<ModelInfo>(value).expect("deserialize model info");
         assert!(!model.include_apps_usage_instructions);
+    }
+
+    #[test]
+    fn model_info_defaults_missing_base_instructions() {
+        let mut value = serde_json::to_value(ModelsResponse {
+            models: vec![test_model(/*spec*/ None)],
+        })
+        .expect("serialize models response");
+        value["models"][0]
+            .as_object_mut()
+            .expect("model should serialize as an object")
+            .remove("base_instructions");
+
+        let response: ModelsResponse =
+            serde_json::from_value(value).expect("deserialize models response");
+
+        assert_eq!(
+            response.models[0].get_model_instructions(/*personality*/ None),
+            BASE_INSTRUCTIONS_DEFAULT
+        );
+    }
+
+    #[test]
+    fn model_info_defaults_null_base_instructions() {
+        let mut value = serde_json::to_value(ModelsResponse {
+            models: vec![test_model(/*spec*/ None)],
+        })
+        .expect("serialize models response");
+        value["models"][0]["base_instructions"] = serde_json::Value::Null;
+
+        let response: ModelsResponse =
+            serde_json::from_value(value).expect("deserialize models response");
+
+        assert_eq!(
+            response.models[0].get_model_instructions(/*personality*/ None),
+            BASE_INSTRUCTIONS_DEFAULT
+        );
     }
 
     #[test]
