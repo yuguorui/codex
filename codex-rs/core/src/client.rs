@@ -2535,11 +2535,11 @@ impl RequestTelemetry for ApiTelemetry {
     fn on_retry(
         &self,
         next_attempt: u64,
-        status: Option<HttpStatusCode>,
+        status: Option<StatusCode>,
         _error: &TransportError,
         delay: Duration,
     ) {
-        if status != Some(HttpStatusCode::TOO_MANY_REQUESTS) {
+        if status != Some(StatusCode::TOO_MANY_REQUESTS) {
             return;
         }
         let Some(notifier) = &self.retry_notifier else {
