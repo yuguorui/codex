@@ -12,12 +12,12 @@
 
 Codex++ extends the official [Codex CLI](https://github.com/openai/codex) with:
 
-- **Chat Completions API** (`wire_api = "chat"`) — connect to any OpenAI-compatible provider: Ollama, vLLM, LiteLLM, DeepSeek, Mistral, Groq, Together, DashScope, and more.
-- **Anthropic Messages API** (`wire_api = "anthropic"`) — use Claude models directly through Anthropic's native API.
-- **Auth header scheme control** (`env_key_auth`) — choose between `Bearer` and `x-api-key` auth per provider.
-- **Provider-specific request fields** (`extra_body`) — merge arbitrary JSON into request bodies for provider-specific features like `enable_thinking` or `thinking_budget`.
-- **Hashline edit tool** — edit code with hash anchors, best for non-openai models that don't support the OpenAI `apply_patch` edit tool.
-- **429 rate-limit retry** — automatic exponential backoff for rate-limited responses.
+- **Chat Completions API** (`wire_api = "chat"`) - connect to any OpenAI-compatible provider: Ollama, vLLM, LiteLLM, DeepSeek, Mistral, Groq, Together, DashScope, and more.
+- **Anthropic Messages API** (`wire_api = "anthropic"`) - use Claude models directly through Anthropic's native API.
+- **Auth header scheme control** (`env_key_auth`) - choose between `Bearer` and `x-api-key` auth per provider.
+- **Provider-specific request fields** (`extra_body`) - merge arbitrary JSON into request bodies for provider-specific features like `enable_thinking` or `thinking_budget`.
+- **Hashline edit tool** - edit code with hash anchors, best for non-openai models that don't support the OpenAI `apply_patch` edit tool.
+- **Always retry** - automatic exponential backoff for any reasonable conditions.
 
 For a detailed technical breakdown, see [`codex-rs/README.md`](./codex-rs/README.md).
 
@@ -32,9 +32,9 @@ curl -fsSL https://github.com/yuguorui/codex/releases/latest/download/install-fo
 The install script resolves the latest release, verifies SHA-256 checksums, stores the standalone package under `~/.codex/packages/standalone`, and installs the `codex++` command into `~/.local/bin`.
 
 Environment variables:
-- `CODEX_INSTALL_DIR` — change the install directory
-- `CODEX_BIN_NAME` — override the command name
-- `CODEX_RELEASE_REPOSITORY` — override the release repository
+- `CODEX_INSTALL_DIR` - change the install directory
+- `CODEX_BIN_NAME` - override the command name
+- `CODEX_RELEASE_REPOSITORY` - override the release repository
 
 ### Build from source
 
@@ -110,7 +110,7 @@ All features from [openai/codex](https://github.com/openai/codex) are inherited 
 
 ## Docs
 
-- [**Codex++ Technical Reference**](./codex-rs/README.md) — detailed wire API docs, configuration, and code organization
+- [**Codex++ Technical Reference**](./codex-rs/README.md) - detailed wire API docs, configuration, and code organization
 - [**Upstream Codex Documentation**](https://developers.openai.com/codex)
 - [**Contributing**](./docs/contributing.md)
 - [**Installing & building**](./docs/install.md)
