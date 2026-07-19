@@ -3873,6 +3873,10 @@ impl Session {
         state.history.conversation_history_snapshot()
     }
 
+    pub(crate) async fn history_version(&self) -> u64 {
+        self.state.lock().await.history_version()
+    }
+
     pub(crate) async fn current_window_id(&self) -> String {
         self.current_window().await.0
     }
