@@ -179,7 +179,14 @@ async fn emit_exec_command_begin(ctx: ToolEventCtx<'_>, exec_input: &ExecCommand
 }
 // Concrete, allocation-free emitter: avoid trait objects and boxed futures.
 pub(crate) enum ToolEmitter {
-    ApplyPatch {
+    Shell {
+        command: Vec<String>,
+        cwd: PathUri,
+        source: ExecCommandSource,
+        parsed_cmd: Vec<ParsedCommand>,
+        plugin_attribution: Option<PluginCommandAttribution>,
+    },
+    FileChange {
         changes: HashMap<PathBuf, FileChange>,
         auto_approved: bool,
         environment_id: Option<String>,
@@ -195,12 +202,12 @@ pub(crate) enum ToolEmitter {
 }
 
 impl ToolEmitter {
-    pub fn apply_patch_for_environment(
+    pub fn file_change_for_environment(
         changes: HashMap<PathBuf, FileChange>,
         auto_approved: bool,
         environment_id: String,
     ) -> Self {
-        Self::ApplyPatch {
+        Self::FileChange {
             changes,
             auto_approved,
             environment_id: Some(environment_id),
@@ -220,6 +227,7 @@ impl ToolEmitter {
             cwd,
             source,
             parsed_cmd: vec![ParsedCommand::Read { cmd, name, path }],
+            plugin_attribution: None,
         }
     }
 
@@ -244,7 +252,34 @@ impl ToolEmitter {
     pub async fn emit(&self, ctx: ToolEventCtx<'_>, stage: ToolEventStage<'_>) {
         match (self, stage) {
             (
-                Self::ApplyPatch {
+                Self::Shell {
+                    command,
+                    cwd,
+                    source,
+                    parsed_cmd,
+                    plugin_attribution,
+                    ..
+                },
+                stage,
+            ) => {
+                emit_exec_stage(
+                    ctx,
+                    ExecCommandInput::new(
+                        command,
+                        cwd,
+                        parsed_cmd,
+                        *source,
+                        /*interaction_input*/ None,
+                        /*process_id*/ None,
+                        plugin_attribution.as_ref(),
+                    ),
+                    stage,
+                )
+                .await;
+            }
+
+            (
+                Self::FileChange {
                     changes,
                     auto_approved,
                     ..
@@ -266,7 +301,7 @@ impl ToolEmitter {
                     .await;
             }
             (
-                Self::ApplyPatch {
+                Self::FileChange {
                     changes,
                     environment_id,
                     ..
@@ -295,7 +330,7 @@ impl ToolEmitter {
                 .await;
             }
             (
-                Self::ApplyPatch { changes, .. },
+                Self::FileChange { changes, .. },
                 ToolEventStage::Failure(ToolEventFailure::Output(output)),
             ) => {
                 emit_patch_end(
@@ -313,7 +348,7 @@ impl ToolEmitter {
                 .await;
             }
             (
-                Self::ApplyPatch { changes, .. },
+                Self::FileChange { changes, .. },
                 ToolEventStage::Failure(ToolEventFailure::Message(message)),
             ) => {
                 emit_patch_end(
@@ -327,7 +362,7 @@ impl ToolEmitter {
                 .await;
             }
             (
-                Self::ApplyPatch {
+                Self::FileChange {
                     changes,
                     environment_id,
                     ..
@@ -428,7 +463,7 @@ impl ToolEmitter {
                     // known prefix. Reuse the output-bearing path so the visible
                     // item still fails while the turn diff consumes that prefix.
                     let event = match (self, applied_patch_delta) {
-                        (Self::ApplyPatch { .. }, Some(delta)) => ToolEventStage::Success {
+                        (Self::FileChange { .. }, Some(delta)) => ToolEventStage::Success {
                             output,
                             applied_patch_delta: Some(delta),
                         },
@@ -456,8 +491,10 @@ impl ToolEmitter {
                 // TODO: We should add a new ToolError variant for user-declined approvals.
                 let normalized = if msg == "rejected by user" {
                     match self {
-                        Self::UnifiedExec { .. } => "exec command rejected by user".to_string(),
-                        Self::ApplyPatch { .. } => "patch rejected by user".to_string(),
+                        Self::Shell { .. } | Self::UnifiedExec { .. } => {
+                            "exec command rejected by user".to_string()
+                        }
+                        Self::FileChange { .. } => "patch rejected by user".to_string(),
                     }
                 } else {
                     msg
@@ -707,7 +744,7 @@ mod tests {
         .await
         .expect("apply patch");
 
-        ToolEmitter::ApplyPatch {
+        ToolEmitter::FileChange {
             changes: HashMap::new(),
             auto_approved: false,
             environment_id: None,
@@ -760,6 +797,64 @@ mod tests {
             PatchApplyStatus::Failed,
         )
         .await;
+    }
+
+    #[tokio::test]
+    async fn failed_exit_code_tracks_committed_delta() {
+        let output = ExecToolCallOutput {
+            exit_code: 1,
+            ..Default::default()
+        };
+        assert_failed_apply_patch_tracks_committed_delta(Ok(output), PatchApplyStatus::Failed)
+            .await;
+    }
+
+    #[tokio::test]
+    async fn known_uncommitted_failure_preserves_existing_turn_diff() {
+        let (session, turn, rx_event) =
+            make_session_and_context_with_dynamic_tools_and_rx(Vec::new()).await;
+        let tracker = Arc::new(Mutex::new(TurnDiffTracker::new()));
+        let dir = tempdir().expect("tempdir");
+        let cwd = PathUri::from_host_native_path(dir.path()).expect("absolute cwd");
+        let mut stdout = Vec::new();
+        let mut stderr = Vec::new();
+        let existing_delta = codex_apply_patch::apply_patch(
+            "*** Begin Patch\n*** Add File: existing.txt\n+before\n*** End Patch",
+            &cwd,
+            &mut stdout,
+            &mut stderr,
+            LOCAL_FS.as_ref(),
+            /*sandbox*/ None,
+        )
+        .await
+        .expect("apply patch");
+        tracker.lock().await.track_delta("", &existing_delta);
+        let before = tracker.lock().await.get_unified_diff();
+
+        let output = ExecToolCallOutput {
+            exit_code: 1,
+            ..Default::default()
+        };
+        let no_change = AppliedPatchDelta::default();
+        ToolEmitter::FileChange {
+            changes: HashMap::new(),
+            auto_approved: true,
+            environment_id: None,
+        }
+        .finish(
+            ToolEventCtx::new(session.as_ref(), turn.as_ref(), "call-id", Some(&tracker)),
+            Ok(output),
+            Some(&no_change),
+        )
+        .await
+        .expect_err("failed edit");
+
+        let completed = rx_event.recv().await.expect("item completed event");
+        assert!(matches!(completed.msg, EventMsg::ItemCompleted(_)));
+        assert_eq!(tracker.lock().await.get_unified_diff(), before);
+        while let Ok(event) = rx_event.try_recv() {
+            assert!(!matches!(event.msg, EventMsg::TurnDiff(_)));
+        }
     }
 
     #[tokio::test]
