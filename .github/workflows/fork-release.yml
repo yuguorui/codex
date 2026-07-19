@@ -63,6 +63,7 @@ jobs:
       CARGO_PROFILE_RELEASE_LTO: thin
       CARGO_PROFILE_RELEASE_CODEGEN_UNITS: ${{ matrix.release-codegen-units }}
       CARGO_BUILD_JOBS: ${{ matrix.cargo-build-jobs }}
+      CODEX_FORK_RELEASE_VERSION: ${{ needs.metadata.outputs.version }}
     strategy:
       fail-fast: false
       matrix:
