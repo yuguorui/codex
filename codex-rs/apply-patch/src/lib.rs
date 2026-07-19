@@ -191,6 +191,11 @@ impl AppliedPatchDelta {
         Self { changes, exact }
     }
 
+    /// Creates an exact delta for textual mutations committed by another file-editing runtime.
+    pub fn from_exact_changes(changes: Vec<AppliedPatchChange>) -> Self {
+        Self::new(changes, /*exact*/ true)
+    }
+
     fn empty() -> Self {
         Self::new(Vec::new(), /*exact*/ true)
     }
