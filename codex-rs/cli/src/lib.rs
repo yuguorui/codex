@@ -22,6 +22,8 @@ pub use login::run_login_with_device_code;
 pub use login::run_login_with_device_code_fallback_to_browser;
 pub use login::run_logout;
 
+pub const CODEX_CLI_DISPLAY_VERSION: &str = env!("CODEX_CLI_DISPLAY_VERSION");
+
 #[derive(Debug, Default, Args)]
 pub struct SandboxStateArgs {
     /// JSON value from `codex/sandbox-state-meta` to apply directly.
