@@ -448,7 +448,7 @@ impl ApplyPatchHandler {
                     }
                     InternalApplyPatchInvocation::DelegateToRuntime(apply) => {
                         let changes = convert_apply_patch_to_protocol(&apply.action);
-                        let emitter = ToolEmitter::apply_patch_for_environment(
+                        let emitter = ToolEmitter::file_change_for_environment(
                             changes.clone(),
                             apply.auto_approved,
                             turn_environment.environment_id.clone(),
@@ -615,7 +615,7 @@ pub(crate) async fn intercept_apply_patch(
                 }
                 InternalApplyPatchInvocation::DelegateToRuntime(apply) => {
                     let changes = convert_apply_patch_to_protocol(&apply.action);
-                    let emitter = ToolEmitter::apply_patch_for_environment(
+                    let emitter = ToolEmitter::file_change_for_environment(
                         changes.clone(),
                         apply.auto_approved,
                         turn_environment.environment_id.clone(),

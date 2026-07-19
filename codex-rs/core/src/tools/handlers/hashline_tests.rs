@@ -1,8 +1,8 @@
 use super::*;
+use codex_protocol::items::CommandExecutionStatus;
 use codex_protocol::items::TurnItem;
 use codex_protocol::parse_command::ParsedCommand;
 use codex_protocol::protocol::EventMsg;
-use codex_protocol::protocol::ExecCommandStatus;
 use codex_protocol::protocol::FileChange;
 use codex_protocol::protocol::PatchApplyStatus;
 use codex_utils_absolute_path::AbsolutePathBuf;
@@ -386,7 +386,7 @@ async fn mutation_emits_standard_file_change_item() {
             move_path: None,
         },
     )]);
-    let emitter = ToolEmitter::apply_patch_for_environment(
+    let emitter = ToolEmitter::file_change_for_environment(
         changes,
         /*auto_approved*/ true,
         String::new(),
@@ -472,11 +472,14 @@ async fn read_emits_standard_explored_command_item() {
         .await
         .expect("hashline read event succeeds");
 
-    let started = rx_event.recv().await.expect("exec begin event");
-    let EventMsg::ExecCommandBegin(begin) = started.msg else {
-        panic!("expected exec command begin");
+    let started = rx_event.recv().await.expect("item started event");
+    let EventMsg::ItemStarted(started) = started.msg else {
+        panic!("expected item started");
     };
-    assert_eq!(begin.call_id, "call-hashline");
+    let TurnItem::CommandExecution(begin) = started.item else {
+        panic!("expected command execution item");
+    };
+    assert_eq!(begin.id, "call-hashline");
     assert_eq!(
         begin.parsed_cmd,
         vec![ParsedCommand::Read {
@@ -489,14 +492,16 @@ async fn read_emits_standard_explored_command_item() {
     let completed = loop {
         let event = tokio::time::timeout(Duration::from_secs(1), rx_event.recv())
             .await
-            .expect("exec command end event")
+            .expect("item completed event")
             .expect("channel open");
-        if let EventMsg::ExecCommandEnd(end) = event.msg {
-            break end;
+        if let EventMsg::ItemCompleted(completed) = event.msg
+            && let TurnItem::CommandExecution(command) = completed.item
+        {
+            break command;
         }
     };
-    assert_eq!(completed.status, ExecCommandStatus::Completed);
-    assert_eq!(completed.stdout, "1:aa|alpha\n");
+    assert_eq!(completed.status, CommandExecutionStatus::Completed);
+    assert_eq!(completed.stdout.as_deref(), Some("1:aa|alpha\n"));
     assert_eq!(completed.parsed_cmd, begin.parsed_cmd);
 }
 
@@ -515,6 +520,23 @@ fn assert_diff_line_counts(diff: &str, expected_added: usize, expected_removed: 
         });
 
     assert_eq!((added, removed), (expected_added, expected_removed));
+}
+
+fn hashline_unified_diff(before: &str, after: &str) -> String {
+    let path = PathUri::from_host_native_path(std::env::temp_dir().join("hashline-diff.txt"))
+        .expect("absolute path URI");
+    let event = file_change_event(&path, Some(before), after, /*context_radius*/ 1);
+    match event
+        .changes
+        .into_values()
+        .next()
+        .expect("single file change")
+    {
+        FileChange::Update { unified_diff, .. } => unified_diff,
+        FileChange::Add { .. } | FileChange::Delete { .. } => {
+            panic!("expected an update event")
+        }
+    }
 }
 
 #[test]
