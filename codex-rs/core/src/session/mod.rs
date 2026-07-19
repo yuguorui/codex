@@ -3690,6 +3690,10 @@ impl Session {
         state.history.conversation_history_snapshot()
     }
 
+    pub(crate) async fn history_version(&self) -> u64 {
+        self.state.lock().await.history_version()
+    }
+
     pub(crate) async fn current_window_id(&self) -> String {
         let state = self.state.lock().await;
         let thread_id = self.thread_id;

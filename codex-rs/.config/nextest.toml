@@ -63,6 +63,12 @@ filter = 'package(codex-core) & kind(test) & test(apply_patch_cli)'
 test-group = 'core_apply_patch_cli_integration'
 
 [[profile.default.overrides]]
+# Claude-compatible file tools execute several full Codex turns and filesystem mutations.
+filter = 'package(codex-core) & kind(test) & test(claude_file_tools)'
+test-group = 'core_apply_patch_cli_integration'
+slow-timeout = { period = "1m", terminate-after = 5 }
+
+[[profile.default.overrides]]
 # These tests create restricted-token Windows child processes and private desktops.
 # Serialize them to avoid exhausting Windows session/global desktop resources in CI.
 filter = 'package(codex-windows-sandbox) & test(legacy_)'
