@@ -817,6 +817,39 @@ async fn environment_count_controls_environment_backed_tools() {
 }
 
 #[tokio::test]
+async fn apply_patch_tool_type_selects_claude_code_edit_interface() {
+    let edit = probe(|turn| {
+        turn.model_info.apply_patch_tool_type = Some(ApplyPatchToolType::ClaudeCode);
+    })
+    .await;
+    edit.assert_visible_contains(&["Read", "Edit"]);
+    edit.assert_registered_contains(&["Read", "Edit"]);
+    edit.assert_visible_lacks(&["apply_patch", "fuzz_view_edit"]);
+
+    let multiple_environments = probe(|turn| {
+        duplicate_primary_environment(turn);
+        turn.model_info.apply_patch_tool_type = Some(ApplyPatchToolType::ClaudeCode);
+    })
+    .await;
+    assert!(has_parameter(
+        multiple_environments.visible_spec("Read"),
+        "environment_id"
+    ));
+    assert!(has_parameter(
+        multiple_environments.visible_spec("Edit"),
+        "environment_id"
+    ));
+
+    let freeform = probe(|turn| {
+        turn.model_info.apply_patch_tool_type = Some(ApplyPatchToolType::Freeform);
+    })
+    .await;
+    freeform.assert_visible_contains(&["apply_patch", "fuzz_view_edit"]);
+    freeform.assert_registered_contains(&["apply_patch", "fuzz_view_edit"]);
+    freeform.assert_visible_lacks(&["Read", "Edit"]);
+}
+
+#[tokio::test]
 async fn environment_tools_follow_the_step_context() {
     let (_session, mut turn) = make_session_and_context().await;
     set_feature(&mut turn, Feature::UnifiedExec, /*enabled*/ true);
