@@ -111,6 +111,10 @@ impl SessionState {
         self.history.clone()
     }
 
+    pub(crate) fn history_version(&self) -> u64 {
+        self.history.history_version()
+    }
+
     pub(crate) fn replace_history(
         &mut self,
         items: Vec<ResponseItem>,
