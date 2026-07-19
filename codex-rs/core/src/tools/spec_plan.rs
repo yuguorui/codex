@@ -14,6 +14,8 @@ use crate::tools::handlers::CurrentTimeHandler;
 use crate::tools::handlers::DynamicToolHandler;
 use crate::tools::handlers::ExecCommandHandler;
 use crate::tools::handlers::ExecCommandHandlerOptions;
+use crate::tools::handlers::FileEditHandler;
+use crate::tools::handlers::FileReadHandler;
 use crate::tools::handlers::GetContextRemainingHandler;
 use crate::tools::handlers::HashlineHandler;
 use crate::tools::handlers::ListAvailablePluginsToInstallHandler;
@@ -34,6 +36,8 @@ use crate::tools::handlers::ViewImageHandler;
 use crate::tools::handlers::WaitForEnvironmentHandler;
 use crate::tools::handlers::WriteStdinHandler;
 use crate::tools::handlers::extension_tools::ExtensionToolAdapter;
+use crate::tools::handlers::file_edit_spec::FileEditToolOptions;
+use crate::tools::handlers::file_read_spec::FileReadToolOptions;
 use crate::tools::handlers::hashline_spec::HashlineToolOptions;
 use crate::tools::handlers::multi_agents::CloseAgentHandler;
 use crate::tools::handlers::multi_agents::ResumeAgentHandler;
@@ -75,6 +79,7 @@ use codex_protocol::dynamic_tools::DynamicToolSpec;
 use codex_protocol::error::CodexErrorDetails;
 use codex_protocol::error::Result as CodexResult;
 use codex_protocol::models::PermissionProfile;
+use codex_protocol::openai_models::ApplyPatchToolType;
 use codex_protocol::openai_models::ConfigShellToolType;
 use codex_protocol::openai_models::InputModality;
 use codex_protocol::openai_models::ModelInfo;
@@ -1254,12 +1259,29 @@ fn add_core_utility_tools(context: &CoreToolPlanContext<'_>, registry: &mut Tool
         ));
     }
 
-    if environment_mode.has_environment() && context.model_info.apply_patch_tool_type.is_some() {
-        let include_environment_id = matches!(environment_mode, ToolEnvironmentMode::Multiple);
-        registry.add(ApplyPatchHandler::new(include_environment_id));
-        registry.add(HashlineHandler::new(HashlineToolOptions {
-            include_environment_id,
-        }));
+    if environment_mode.has_environment()
+        && let Some(apply_patch_tool_type) = context.model_info.apply_patch_tool_type.as_ref()
+    {
+        match apply_patch_tool_type {
+            ApplyPatchToolType::Freeform => {
+                let include_environment_id =
+                    matches!(environment_mode, ToolEnvironmentMode::Multiple);
+                registry.add(ApplyPatchHandler::new(include_environment_id));
+                registry.add(HashlineHandler::new(HashlineToolOptions {
+                    include_environment_id,
+                }));
+            }
+            ApplyPatchToolType::ClaudeCode => {
+                let include_environment_id =
+                    matches!(environment_mode, ToolEnvironmentMode::Multiple);
+                registry.add(FileReadHandler::new(FileReadToolOptions {
+                    include_environment_id,
+                }));
+                registry.add(FileEditHandler::new(FileEditToolOptions {
+                    include_environment_id,
+                }));
+            }
+        }
     }
 
     if context
