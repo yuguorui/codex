@@ -116,6 +116,10 @@ impl SessionState {
         self.history.clone()
     }
 
+    pub(crate) fn history_version(&self) -> u64 {
+        self.history.history_version()
+    }
+
     #[cfg(test)]
     pub(crate) fn replace_history(
         &mut self,
