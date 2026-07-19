@@ -17,6 +17,7 @@ use codex_client::RequestCompression;
 use codex_client::RequestTelemetry;
 use codex_protocol::models::ContentItem;
 use codex_protocol::models::FunctionCallOutputBody;
+use codex_protocol::models::FunctionCallOutputContentItem;
 use codex_protocol::models::ImageDetail;
 use codex_protocol::models::ReasoningItemContent;
 use codex_protocol::models::ResponseItem;
@@ -639,8 +640,8 @@ fn anthropic_messages_from_items(
                 flush_pending_assistant_content(&mut messages, &mut pending_assistant_content);
                 pending_tool_results.push(AnthropicContentBlock::ToolResult {
                     tool_use_id: call_id,
-                    content: Value::String(function_output_to_anthropic_content(output.body)),
-                    is_error: None,
+                    content: function_output_to_anthropic_content(output.body),
+                    is_error: (output.success == Some(false)).then_some(true),
                     cache_control: None,
                 });
             }
@@ -721,21 +722,8 @@ fn anthropic_content_from_items(content: Vec<ContentItem>) -> AnthropicContent {
             }
             ContentItem::InputImage { image_url, detail } => {
                 let _detail: Option<ImageDetail> = detail;
-                let source = if let Some(rest) = image_url.strip_prefix("data:") {
-                    // Parse "image/png;base64,ACTUAL_DATA"
-                    if let Some((media_type, data)) = rest.split_once(";base64,") {
-                        AnthropicImageSource::Base64 {
-                            media_type: media_type.to_string(),
-                            data: data.to_string(),
-                        }
-                    } else {
-                        AnthropicImageSource::Url { url: image_url }
-                    }
-                } else {
-                    AnthropicImageSource::Url { url: image_url }
-                };
                 blocks.push(AnthropicContentBlock::Image {
-                    source,
+                    source: anthropic_image_source(image_url),
                     cache_control: None,
                 });
             }
@@ -780,8 +768,45 @@ fn flush_pending_tool_results(
     });
 }
 
-fn function_output_to_anthropic_content(output: FunctionCallOutputBody) -> String {
-    output.to_text().unwrap_or_default()
+fn function_output_to_anthropic_content(output: FunctionCallOutputBody) -> Value {
+    match output {
+        FunctionCallOutputBody::Text(text) => Value::String(text),
+        FunctionCallOutputBody::ContentItems(items) => Value::Array(
+            items
+                .into_iter()
+                .filter_map(|item| match item {
+                    FunctionCallOutputContentItem::InputText { text } => {
+                        Some(AnthropicContentBlock::Text {
+                            text,
+                            cache_control: None,
+                        })
+                    }
+                    FunctionCallOutputContentItem::InputImage {
+                        image_url,
+                        detail: _,
+                    } => Some(AnthropicContentBlock::Image {
+                        source: anthropic_image_source(image_url),
+                        cache_control: None,
+                    }),
+                    FunctionCallOutputContentItem::InputAudio { .. }
+                    | FunctionCallOutputContentItem::EncryptedContent { .. } => None,
+                })
+                .filter_map(|block| serde_json::to_value(block).ok())
+                .collect(),
+        ),
+    }
+}
+
+fn anthropic_image_source(image_url: String) -> AnthropicImageSource {
+    if let Some(rest) = image_url.strip_prefix("data:")
+        && let Some((media_type, data)) = rest.split_once(";base64,")
+    {
+        return AnthropicImageSource::Base64 {
+            media_type: media_type.to_string(),
+            data: data.to_string(),
+        };
+    }
+    AnthropicImageSource::Url { url: image_url }
 }
 
 fn anthropic_tools_from_responses_tools(
@@ -1089,6 +1114,46 @@ mod tests {
                 },
             ])
         );
+    }
+
+    #[test]
+    fn preserves_multimodal_tool_results_and_error_status() {
+        let body = body_from(request(
+            vec![
+                ResponseItem::FunctionCall {
+                    id: None,
+                    name: "Read".to_string(),
+                    namespace: None,
+                    arguments: "{}".to_string(),
+                    call_id: "call-image".to_string(),
+                    internal_chat_message_metadata_passthrough: None,
+                },
+                ResponseItem::FunctionCallOutput {
+                    call_id: "call-image".to_string(),
+                    output: FunctionCallOutputPayload {
+                        body: FunctionCallOutputBody::ContentItems(vec![
+                            FunctionCallOutputContentItem::InputText {
+                                text: "page 1".to_string(),
+                            },
+                            FunctionCallOutputContentItem::InputImage {
+                                image_url: "data:image/png;base64,iVBORw0KGgo=".to_string(),
+                                detail: None,
+                            },
+                        ]),
+                        success: Some(false),
+                    },
+                    internal_chat_message_metadata_passthrough: None,
+                    id: None,
+                },
+            ],
+            Vec::new(),
+        ));
+
+        let tool_result = &body["messages"][1]["content"][0];
+        assert_eq!(tool_result["is_error"], true);
+        assert_eq!(tool_result["content"][0]["text"], "page 1");
+        assert_eq!(tool_result["content"][1]["type"], "image");
+        assert_eq!(tool_result["content"][1]["source"]["type"], "base64");
     }
 
     #[test]
