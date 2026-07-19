@@ -2,14 +2,9 @@ use codex_exec_server::FileSystemSandboxContext;
 use codex_protocol::exec_output::ExecToolCallOutput;
 use codex_protocol::exec_output::StreamOutput;
 use codex_protocol::protocol::ExecCommandSource;
-use codex_protocol::protocol::FileChange;
-use codex_utils_absolute_path::AbsolutePathBuf;
-use codex_utils_path_uri::LegacyAppPathString;
 use codex_utils_path_uri::PathUri;
 use serde::Deserialize;
-use similar::TextDiff;
 use std::collections::HashMap;
-use std::path::PathBuf;
 use std::time::Duration;
 
 use crate::function_tool::FunctionCallError;
@@ -20,10 +15,19 @@ use crate::tools::context::ToolPayload;
 use crate::tools::context::boxed_tool_output;
 use crate::tools::events::ToolEmitter;
 use crate::tools::events::ToolEventCtx;
+use crate::tools::handlers::file_change_event::FileChangeEvent;
+use crate::tools::handlers::file_change_event::file_change_event;
+use crate::tools::handlers::file_change_event::path_event_key;
+use crate::tools::handlers::file_path::resolve_tool_path;
 use crate::tools::handlers::hashline_spec::HashlineToolOptions;
 use crate::tools::handlers::hashline_spec::create_hashline_tool;
 use crate::tools::handlers::parse_arguments;
 use crate::tools::handlers::resolve_tool_environment;
+use crate::tools::handlers::verified_file_write::ExpectedFileContents;
+use crate::tools::handlers::verified_file_write::FileWriteCommitState;
+use crate::tools::handlers::verified_file_write::VerifiedFileWrite;
+use crate::tools::handlers::verified_file_write::VerifiedFileWriteError;
+use crate::tools::handlers::verified_file_write::write_file_verified;
 use crate::tools::hook_names::HookToolName;
 use crate::tools::registry::CoreToolRuntime;
 use crate::tools::registry::PreToolUsePayload;
@@ -87,6 +91,11 @@ struct Document {
     lines: Vec<String>,
     newline: &'static str,
     trailing_newline: bool,
+}
+
+struct LoadedDocument {
+    document: Document,
+    original: String,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -155,7 +164,7 @@ impl HashlineHandler {
             ));
         };
         let cwd = turn_environment.cwd();
-        let path = resolve_hashline_path(cwd, &args.path)?;
+        let path = resolve_tool_path("fuzz_view_edit", "path", cwd, &args.path)?;
         let sandbox = turn.file_system_sandbox_context(
             /*additional_permissions*/ None,
             /*environment*/ turn_environment,
@@ -167,9 +176,11 @@ impl HashlineHandler {
                 let event_ctx = ToolEventCtx::new(session.as_ref(), turn.as_ref(), &call_id, None);
                 emitter.begin(event_ctx).await;
                 let result = match read_document(turn_environment, &path, Some(&sandbox)).await {
-                    Ok(doc) => {
-                        read_output(&doc, args.anchor.as_deref(), context_lines(args.context))
-                    }
+                    Ok(loaded) => read_output(
+                        &loaded.document,
+                        args.anchor.as_deref(),
+                        context_lines(args.context),
+                    ),
                     Err(error) => Err(error),
                 };
                 match result {
@@ -200,23 +211,23 @@ impl HashlineHandler {
                 }
             }
             HashlineAction::Edit | HashlineAction::Insert | HashlineAction::Delete => {
-                let mut doc = read_document(turn_environment, &path, Some(&sandbox)).await?;
-                let before = doc.render();
+                let LoadedDocument {
+                    document: mut doc,
+                    original,
+                } = read_document(turn_environment, &path, Some(&sandbox)).await?;
                 let content = args.content.as_deref();
                 let changed = apply_mutation(&mut doc, &args, content)?;
                 let after = doc.render();
-                if before == after {
+                if original == after {
                     mutation_output(changed, &doc, context_lines(args.context), None)
                 } else {
-                    let unified_diff = hashline_unified_diff(&before, &after);
-                    let changes = HashMap::from([(
-                        path_event_key(&path),
-                        FileChange::Update {
-                            unified_diff,
-                            move_path: None,
-                        },
-                    )]);
-                    let emitter = ToolEmitter::apply_patch_for_environment(
+                    let FileChangeEvent { changes, delta } = file_change_event(
+                        &path,
+                        Some(&original),
+                        &after,
+                        /*context_radius*/ 1,
+                    );
+                    let emitter = ToolEmitter::file_change_for_environment(
                         changes,
                         /*auto_approved*/ true,
                         turn_environment.environment_id.clone(),
@@ -229,14 +240,22 @@ impl HashlineHandler {
                     );
                     emitter.begin(event_ctx).await;
                     let fs = turn_environment.environment.get_filesystem();
-                    if let Err(error) = fs
-                        .write_file(&path, after.into_bytes(), Some(&sandbox))
-                        .await
+                    if let Err(error) = write_file_verified(VerifiedFileWrite {
+                        fs: fs.as_ref(),
+                        path: &path,
+                        sandbox: Some(&sandbox),
+                        expected: ExpectedFileContents::Present(original.as_bytes()),
+                        updated: after.as_bytes(),
+                    })
+                    .await
                     {
-                        let message = format!(
-                            "fuzz_view_edit failed to write `{}`: {error}",
-                            path_display(&path)
-                        );
+                        let empty_delta = codex_apply_patch::AppliedPatchDelta::default();
+                        let applied_delta = match error.commit_state() {
+                            FileWriteCommitState::NotCommitted => Some(&empty_delta),
+                            FileWriteCommitState::Committed => delta.as_ref(),
+                            FileWriteCommitState::Unknown => None,
+                        };
+                        let message = hashline_write_error_message(error, &path_display(&path));
                         let event_ctx = ToolEventCtx::new(
                             session.as_ref(),
                             turn.as_ref(),
@@ -247,7 +266,7 @@ impl HashlineHandler {
                             .finish(
                                 event_ctx,
                                 Ok(hashline_output(1, String::new(), message.clone())),
-                                None,
+                                applied_delta,
                             )
                             .await?;
                         return Err(FunctionCallError::RespondToModel(message));
@@ -262,7 +281,7 @@ impl HashlineHandler {
                         .finish(
                             event_ctx,
                             Ok(hashline_output(0, String::new(), String::new())),
-                            None,
+                            delta.as_ref(),
                         )
                         .await?;
                     mutation_output(changed, &doc, context_lines(args.context), Some(&path))
@@ -321,7 +340,7 @@ async fn read_document(
     turn_environment: &TurnEnvironment,
     path: &PathUri,
     sandbox: Option<&FileSystemSandboxContext>,
-) -> Result<Document, FunctionCallError> {
+) -> Result<LoadedDocument, FunctionCallError> {
     let fs = turn_environment.environment.get_filesystem();
     let bytes = fs.read_file(path, sandbox).await.map_err(|error| {
         FunctionCallError::RespondToModel(format!(
@@ -335,48 +354,38 @@ async fn read_document(
             path_display(path)
         ))
     })?;
-    Ok(Document::parse(&text))
+    let document = Document::parse(&text);
+    Ok(LoadedDocument {
+        document,
+        original: text,
+    })
 }
 
-fn resolve_hashline_path(cwd: &PathUri, path: &str) -> Result<PathUri, FunctionCallError> {
-    if path.trim().is_empty() {
-        return Err(FunctionCallError::RespondToModel(
-            "fuzz_view_edit requires a non-empty `path`".to_string(),
-        ));
+fn hashline_write_error_message(error: VerifiedFileWriteError, path: &str) -> String {
+    match error {
+        VerifiedFileWriteError::ReadBeforeWrite(error) => {
+            format!("fuzz_view_edit failed to re-read `{path}` before writing: {error}")
+        }
+        VerifiedFileWriteError::UnexpectedContents => {
+            format!("fuzz_view_edit found that `{path}` changed before writing; read it again")
+        }
+        VerifiedFileWriteError::CreateParent(error) => {
+            format!("fuzz_view_edit failed to create parent directories for `{path}`: {error}")
+        }
+        VerifiedFileWriteError::Write(error) => {
+            format!("fuzz_view_edit failed to write `{path}`: {error}")
+        }
+        VerifiedFileWriteError::ReadAfterWrite(error) => {
+            format!("fuzz_view_edit could not verify `{path}` after writing: {error}")
+        }
+        VerifiedFileWriteError::UnexpectedWrittenContents => {
+            format!("fuzz_view_edit did not produce the expected contents for `{path}`")
+        }
     }
-    if let Ok(uri) = PathUri::parse(path) {
-        return Ok(uri);
-    }
-
-    let legacy_path: LegacyAppPathString =
-        serde_json::from_value(serde_json::Value::String(path.to_string())).map_err(|error| {
-            FunctionCallError::RespondToModel(format!(
-                "fuzz_view_edit path `{path}` is not valid UTF-8 path text: {error}"
-            ))
-        })?;
-    if let Some(convention) = legacy_path.infer_absolute_path_convention() {
-        return legacy_path.to_path_uri(convention).map_err(|error| {
-            FunctionCallError::RespondToModel(format!(
-                "fuzz_view_edit path `{path}` is not a valid absolute {convention} path: {error}"
-            ))
-        });
-    }
-
-    cwd.join(&path.replace('\\', "/")).map_err(|error| {
-        FunctionCallError::RespondToModel(format!(
-            "fuzz_view_edit failed to resolve `{path}` against `{cwd}`: {error}"
-        ))
-    })
 }
 
 fn path_display(path: &PathUri) -> String {
     path.inferred_native_path_string()
-}
-
-fn path_event_key(path: &PathUri) -> PathBuf {
-    path.to_abs_path()
-        .map(AbsolutePathBuf::into_path_buf)
-        .unwrap_or_else(|_| PathBuf::from(path_display(path)))
 }
 
 fn require_anchor(args: &HashlineArgs) -> Result<&str, FunctionCallError> {
@@ -612,13 +621,6 @@ fn apply_mutation(
             "internal fuzz_view_edit mutation dispatch error".to_string(),
         )),
     }
-}
-
-fn hashline_unified_diff(before: &str, after: &str) -> String {
-    TextDiff::from_lines(before, after)
-        .unified_diff()
-        .context_radius(1)
-        .to_string()
 }
 
 fn mutation_output(
