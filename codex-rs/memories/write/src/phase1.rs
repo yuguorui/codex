@@ -3,6 +3,8 @@ use crate::metrics::MEMORY_PHASE_ONE_E2E_MS;
 use crate::metrics::MEMORY_PHASE_ONE_JOBS;
 use crate::metrics::MEMORY_PHASE_ONE_OUTPUT;
 use crate::metrics::MEMORY_PHASE_ONE_TOKEN_USAGE;
+use crate::model_selection::MemoryPhase;
+use crate::model_selection::resolve_memory_model;
 use crate::runtime::MemoryStartupContext;
 use crate::runtime::StageOneRequestContext;
 use codex_config::types::MemoriesConfig;
@@ -191,12 +193,13 @@ async fn build_request_context(
     context: &MemoryStartupContext,
     config: &Config,
 ) -> StageOneRequestContext {
-    let model_name = config.memories.extract_model.clone().unwrap_or_else(|| {
-        context
-            .provider()
-            .memory_extraction_preferred_model()
-            .to_string()
-    });
+    let current_model = context.current_model().await;
+    let model_name = resolve_memory_model(
+        config,
+        context.provider(),
+        &current_model,
+        MemoryPhase::Extraction,
+    );
     context
         .stage_one_request_context(config, &model_name, crate::stage_one::REASONING_EFFORT)
         .await
