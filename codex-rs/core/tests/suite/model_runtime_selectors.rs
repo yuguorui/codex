@@ -1,4 +1,7 @@
 use anyhow::Result;
+use codex_config::ConfigLayerEntry;
+use codex_config::ConfigLayerSource;
+use codex_config::ConfigLayerStack;
 use codex_core::TurnInputRequest;
 use codex_core::config::Config;
 use codex_features::Feature;
@@ -356,8 +359,21 @@ async fn multi_agent_config_precedence_overrides_remote_model_selector() -> Resu
 
     let mut v2_model = remote_model("test-multi-agent-v2");
     v2_model.multi_agent_version = Some(MultiAgentVersion::V2);
-    let disabled_body = response_body_for_remote_model(v2_model, |config| {
-        config.agents_enabled = false;
+    let v1_override_body = response_body_for_remote_model(v2_model, |config| {
+        let requirements = config.config_layer_stack.requirements().clone();
+        let requirements_toml = config.config_layer_stack.requirements_toml().clone();
+        config.config_layer_stack = ConfigLayerStack::new(
+            vec![ConfigLayerEntry::new(
+                ConfigLayerSource::SessionFlags,
+                toml::toml! {
+                    features = { multi_agent = true, multi_agent_v2 = false }
+                }
+                .into(),
+            )],
+            requirements,
+            requirements_toml,
+        )
+        .expect("test config layer should be valid");
         config
             .features
             .enable(Feature::Collab)
@@ -368,15 +384,9 @@ async fn multi_agent_config_precedence_overrides_remote_model_selector() -> Resu
             .expect("test config should allow feature update");
     })
     .await?;
-    assert!(tool_names(&disabled_body).iter().all(|name| !matches!(
-        name.as_str(),
-        "multi_agent_v1"
-            | MULTI_AGENT_V2_NAMESPACE
-            | "spawn_agent"
-            | "send_message"
-            | "wait_agent"
-            | "list_agents"
-    )));
+    let v1_override_tools = tool_names(&v1_override_body);
+    assert!(v1_override_tools.contains(&"multi_agent_v1".to_string()));
+    assert!(!v1_override_tools.contains(&MULTI_AGENT_V2_NAMESPACE.to_string()));
 
     let mut v1_model = remote_model("test-multi-agent-v1");
     v1_model.multi_agent_version = Some(MultiAgentVersion::V1);
