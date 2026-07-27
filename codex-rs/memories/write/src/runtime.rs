@@ -194,6 +194,10 @@ impl MemoryStartupContext {
         self.provider.as_ref()
     }
 
+    pub(crate) async fn current_model(&self) -> String {
+        self.thread.config_snapshot().await.model
+    }
+
     pub(crate) fn counter(&self, name: &str, inc: i64, tags: &[(&str, &str)]) {
         self.session_telemetry.counter(name, inc, tags);
     }
