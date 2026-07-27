@@ -4,6 +4,8 @@ use crate::metrics::MEMORY_PHASE_TWO_E2E_MS;
 use crate::metrics::MEMORY_PHASE_TWO_INPUT;
 use crate::metrics::MEMORY_PHASE_TWO_JOBS;
 use crate::metrics::MEMORY_PHASE_TWO_TOKEN_USAGE;
+use crate::model_selection::MemoryPhase;
+use crate::model_selection::resolve_memory_model;
 use crate::prune_old_extension_resources;
 use crate::rebuild_raw_memories_file_from_memories;
 use crate::runtime::MemoryStartupContext;
@@ -83,10 +85,12 @@ pub async fn run(
     }
 
     // 3. Build the locked-down config used by the consolidation agent.
+    let current_model = context.current_model().await;
     let Some(agent_config) = agent::get_config(
         config.as_ref(),
         parent_permission_profile,
         context.provider(),
+        &current_model,
     ) else {
         // If we can't get the config, we can't consolidate.
         tracing::error!("failed to get agent config");
@@ -312,6 +316,7 @@ mod agent {
         config: &Config,
         parent_permission_profile: PermissionProfile,
         provider: &dyn ModelProvider,
+        current_model: &str,
     ) -> Option<Config> {
         let root = memory_root(&config.codex_home);
         let mut agent_config = config.clone();
@@ -354,13 +359,12 @@ mod agent {
         }
         .ok()?;
 
-        agent_config.model = Some(
-            config
-                .memories
-                .consolidation_model
-                .clone()
-                .unwrap_or_else(|| provider.memory_consolidation_preferred_model().to_string()),
-        );
+        agent_config.model = Some(resolve_memory_model(
+            config,
+            provider,
+            current_model,
+            MemoryPhase::Consolidation,
+        ));
         agent_config.model_reasoning_effort = Some(crate::stage_two::REASONING_EFFORT);
 
         Some(agent_config)
