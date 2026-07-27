@@ -693,9 +693,13 @@ async fn memories_startup_phase1_uses_live_thread_service_tier_and_detached_meta
 async fn memories_startup_phase1_provider_default_drives_request_model() -> anyhow::Result<()> {
     let server = start_mock_server().await;
     let home = Arc::new(TempDir::new()?);
-    let request =
-        run_memory_phase_one_model_request_test(&server, home, startup_test_memories_config())
-            .await?;
+    let request = run_memory_phase_one_model_request_test(
+        &server,
+        home,
+        startup_test_memories_config(),
+        MemoryModelTestSetup::ProviderPreferred,
+    )
+    .await?;
 
     assert_eq!(
         request.body_json()["model"].as_str(),
@@ -715,9 +719,13 @@ async fn memories_startup_phase1_provider_default_drives_request_model() -> anyh
 async fn memories_startup_phase2_provider_default_drives_request_model() -> anyhow::Result<()> {
     let server = start_mock_server().await;
     let home = Arc::new(TempDir::new()?);
-    let request =
-        run_memory_phase_two_model_request_test(&server, home, startup_test_memories_config())
-            .await?;
+    let request = run_memory_phase_two_model_request_test(
+        &server,
+        home,
+        startup_test_memories_config(),
+        MemoryModelTestSetup::ProviderPreferred,
+    )
+    .await?;
 
     assert_eq!(
         request.body_json()["model"].as_str(),
@@ -734,7 +742,13 @@ async fn memories_startup_phase1_explicit_model_override_drives_request_model() 
     let home = Arc::new(TempDir::new()?);
     let mut memories = startup_test_memories_config();
     memories.extract_model = Some("override.phase-one".to_string());
-    let request = run_memory_phase_one_model_request_test(&server, home, memories).await?;
+    let request = run_memory_phase_one_model_request_test(
+        &server,
+        home,
+        memories,
+        MemoryModelTestSetup::ProviderPreferred,
+    )
+    .await?;
 
     assert_eq!(
         request.body_json()["model"].as_str(),
@@ -751,7 +765,13 @@ async fn memories_startup_phase2_explicit_model_override_drives_request_model() 
     let home = Arc::new(TempDir::new()?);
     let mut memories = startup_test_memories_config();
     memories.consolidation_model = Some("override.phase-two".to_string());
-    let request = run_memory_phase_two_model_request_test(&server, home, memories).await?;
+    let request = run_memory_phase_two_model_request_test(
+        &server,
+        home,
+        memories,
+        MemoryModelTestSetup::ProviderPreferred,
+    )
+    .await?;
 
     assert_eq!(
         request.body_json()["model"].as_str(),
@@ -761,14 +781,70 @@ async fn memories_startup_phase2_explicit_model_override_drives_request_model() 
     Ok(())
 }
 
+const CURRENT_THREAD_MODEL: &str = "current-thread-model";
+
+#[tokio::test]
+async fn memories_startup_phase1_non_openai_provider_uses_current_thread_model()
+-> anyhow::Result<()> {
+    let server = start_mock_server().await;
+    let home = Arc::new(TempDir::new()?);
+    let request = run_memory_phase_one_model_request_test(
+        &server,
+        home,
+        startup_test_memories_config(),
+        MemoryModelTestSetup::NonOpenAiCurrentThread {
+            model: CURRENT_THREAD_MODEL,
+        },
+    )
+    .await?;
+
+    assert_eq!(
+        request.body_json()["model"].as_str(),
+        Some(CURRENT_THREAD_MODEL)
+    );
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn memories_startup_phase2_non_openai_provider_uses_current_thread_model()
+-> anyhow::Result<()> {
+    let server = start_mock_server().await;
+    let home = Arc::new(TempDir::new()?);
+    let request = run_memory_phase_two_model_request_test(
+        &server,
+        home,
+        startup_test_memories_config(),
+        MemoryModelTestSetup::NonOpenAiCurrentThread {
+            model: CURRENT_THREAD_MODEL,
+        },
+    )
+    .await?;
+
+    assert_eq!(
+        request.body_json()["model"].as_str(),
+        Some(CURRENT_THREAD_MODEL)
+    );
+
+    Ok(())
+}
+
+#[derive(Clone, Copy)]
+enum MemoryModelTestSetup {
+    ProviderPreferred,
+    NonOpenAiCurrentThread { model: &'static str },
+}
+
 async fn run_memory_phase_one_model_request_test(
     server: &wiremock::MockServer,
     home: Arc<TempDir>,
     memories: MemoriesConfig,
+    setup: MemoryModelTestSetup,
 ) -> anyhow::Result<ResponsesRequest> {
     let test = build_test_codex_with_memories_config(server, Arc::clone(&home), memories).await?;
+    let provider_info = memory_model_test_provider_info(&test, setup).await?;
     let provider = Arc::new(MockMemoryModelProvider::new(
-        test.config.model_provider.clone(),
+        provider_info,
         Some(test.thread_manager.auth_manager()),
     ));
     let db = test
@@ -806,10 +882,12 @@ async fn run_memory_phase_two_model_request_test(
     server: &wiremock::MockServer,
     home: Arc<TempDir>,
     memories: MemoriesConfig,
+    setup: MemoryModelTestSetup,
 ) -> anyhow::Result<ResponsesRequest> {
     let test = build_test_codex_with_memories_config(server, home.clone(), memories).await?;
+    let provider_info = memory_model_test_provider_info(&test, setup).await?;
     let provider = Arc::new(MockMemoryModelProvider::new(
-        test.config.model_provider.clone(),
+        provider_info,
         Some(test.thread_manager.auth_manager()),
     ));
     let db = test
@@ -859,6 +937,28 @@ async fn run_memory_phase_two_model_request_test(
     );
     test.codex.shutdown_and_wait().await?;
     Ok(request)
+}
+
+async fn memory_model_test_provider_info(
+    test: &TestCodex,
+    setup: MemoryModelTestSetup,
+) -> anyhow::Result<ModelProviderInfo> {
+    let mut provider_info = test.config.model_provider.clone();
+    match setup {
+        MemoryModelTestSetup::ProviderPreferred => {}
+        MemoryModelTestSetup::NonOpenAiCurrentThread { model } => {
+            provider_info.name = "test-provider".to_string();
+            core_test_support::submit_thread_settings(
+                &test.codex,
+                codex_protocol::protocol::ThreadSettingsOverrides {
+                    model: Some(model.to_string()),
+                    ..Default::default()
+                },
+            )
+            .await?;
+        }
+    }
+    Ok(provider_info)
 }
 
 fn startup_test_memories_config() -> MemoriesConfig {
