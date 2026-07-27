@@ -1131,6 +1131,34 @@ mod tests {
                     encrypted_function_args: None,
                 },
                 ResponseItem::FunctionCallOutput {
+                    call_id: "call-image".to_string(),
+                    output: FunctionCallOutputPayload {
+                        body: FunctionCallOutputBody::ContentItems(vec![
+                            FunctionCallOutputContentItem::InputText {
+                                text: "page 1".to_string(),
+                            },
+                            FunctionCallOutputContentItem::InputImage {
+                                image_url: "data:image/png;base64,iVBORw0KGgo=".to_string(),
+                                detail: None,
+                            },
+                        ]),
+                        success: Some(false),
+                    },
+                    internal_chat_message_metadata_passthrough: None,
+                    id: None,
+                },
+            ],
+            Vec::new(),
+        ));
+
+        let tool_result = &body["messages"][1]["content"][0];
+        assert_eq!(tool_result["is_error"], true);
+        assert_eq!(tool_result["content"][0]["text"], "page 1");
+        assert_eq!(tool_result["content"][1]["type"], "image");
+        assert_eq!(tool_result["content"][1]["source"]["type"], "base64");
+    }
+
+    #[test]
     fn converts_redacted_reasoning_for_replay() {
         let body = body_from(request(
             vec![ResponseItem::Reasoning {
