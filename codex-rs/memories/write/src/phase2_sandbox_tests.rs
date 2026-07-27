@@ -52,9 +52,13 @@ async fn consolidation_uses_canonical_parent_enforcement() -> anyhow::Result<()>
             ),
         ),
     ] {
-        let agent_config =
-            agent::get_config(&test.config, parent_permission_profile, provider.as_ref())
-                .expect("agent config should be created");
+        let agent_config = agent::get_config(
+            &test.config,
+            parent_permission_profile,
+            provider.as_ref(),
+            &test.session_configured.model,
+        )
+        .expect("agent config should be created");
 
         assert_eq!(
             agent_config.permissions.permission_profile(),
