@@ -37,6 +37,17 @@ The pipeline is triggered when a root session starts, and only if:
 
 It runs asynchronously in the background and executes two phases in order: Phase 1, then Phase 2.
 
+## Model selection
+
+Each phase first honors its explicit model override:
+
+- `memories.extract_model` for Phase 1
+- `memories.consolidation_model` for Phase 2
+
+Without an explicit override, the OpenAI provider uses its preferred memory-specific model for the
+phase. Other providers use the current thread model from the live thread configuration, including
+model changes applied after the thread started.
+
 ## Phase 1: Rollout Extraction (per-thread)
 
 Phase 1 finds recent eligible rollouts and extracts a structured memory from each one.
