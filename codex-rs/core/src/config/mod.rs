@@ -1470,6 +1470,26 @@ impl Config {
             Some(MultiAgentVersion::V2)
         } else if !self.agents_enabled {
             Some(MultiAgentVersion::Disabled)
+        } else if self
+            .config_layer_stack
+            .layers_high_to_low()
+            .filter_map(|layer| {
+                let feature = layer
+                    .config
+                    .get("features")?
+                    .get(Feature::MultiAgentV2.key())?;
+                feature
+                    .as_bool()
+                    .or_else(|| feature.get("enabled").and_then(toml::Value::as_bool))
+            })
+            .next()
+            == Some(false)
+        {
+            Some(if self.features.enabled(Feature::Collab) {
+                MultiAgentVersion::V1
+            } else {
+                MultiAgentVersion::Disabled
+            })
         } else {
             None
         }
