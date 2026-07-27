@@ -8,6 +8,7 @@ mod control;
 mod extensions;
 mod guard;
 mod metrics;
+mod model_selection;
 mod phase1;
 mod phase2;
 mod prompts;
