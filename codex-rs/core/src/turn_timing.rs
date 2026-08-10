@@ -151,6 +151,13 @@ impl TurnTimingState {
         }
     }
 
+    pub(crate) async fn sampling_active(&self) -> bool {
+        matches!(
+            self.profile_state().active_phase,
+            Some(TurnProfilePhase::Sampling)
+        )
+    }
+
     pub(crate) fn record_sampling_retry(&self) {
         self.profile_state().record_sampling_retry();
     }

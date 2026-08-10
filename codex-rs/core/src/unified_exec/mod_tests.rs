@@ -354,6 +354,7 @@ async fn unified_exec_persists_across_requests() -> anyhow::Result<()> {
     )
     .await?;
     let process_id = open_shell.process_id.expect("expected process_id");
+    assert!(session.has_live_tracked_processes().await);
     assert_eq!(
         session.list_background_terminals().await,
         vec![BackgroundTerminalInfo {
@@ -390,6 +391,7 @@ async fn unified_exec_persists_across_requests() -> anyhow::Result<()> {
 
     assert!(session.terminate_background_terminal(process_id).await);
     assert!(!session.terminate_background_terminal(process_id).await);
+    assert!(!session.has_live_tracked_processes().await);
     assert!(session.list_background_terminals().await.is_empty());
 
     Ok(())

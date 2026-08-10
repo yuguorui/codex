@@ -23,6 +23,7 @@ use codex_protocol::error::CodexErrorDetails;
 use codex_protocol::mcp::ClientMcpExtensions;
 use codex_protocol::protocol::ThreadHistoryMode;
 use codex_thread_store::PersistContext;
+use codex_workflow_extension::WorkflowService;
 use std::ops::ControlFlow;
 
 pub(super) const THREAD_LIST_DEFAULT_LIMIT: usize = 25;
@@ -454,6 +455,7 @@ pub(crate) struct ThreadRequestProcessor {
     pub(super) skills_watcher: Arc<SkillsWatcher>,
     pub(super) turn_cost_worker: Option<crate::turn_cost_worker::TurnCostWorkerHandle>,
     pub(super) initial_config_warnings: Arc<Vec<ConfigWarningNotification>>,
+    pub(super) workflow_service: WorkflowService,
 }
 
 /// Outcome of trying to satisfy a resume request from an already loaded thread.
@@ -487,6 +489,7 @@ impl ThreadRequestProcessor {
         skills_watcher: Arc<SkillsWatcher>,
         turn_cost_worker: Option<crate::turn_cost_worker::TurnCostWorkerHandle>,
         initial_config_warnings: Vec<ConfigWarningNotification>,
+        workflow_service: WorkflowService,
     ) -> Self {
         Self {
             auth_manager,
@@ -507,6 +510,7 @@ impl ThreadRequestProcessor {
             skills_watcher,
             turn_cost_worker,
             initial_config_warnings: Arc::new(initial_config_warnings),
+            workflow_service,
         }
     }
 
@@ -1085,6 +1089,7 @@ impl ThreadRequestProcessor {
             thread_unload_delay: self.config.thread_unload_delay,
             skills_watcher: Arc::clone(&self.skills_watcher),
             turn_cost_worker: self.turn_cost_worker.clone(),
+            workflow_service: self.workflow_service.clone(),
         }
     }
 
@@ -1217,6 +1222,7 @@ impl ThreadRequestProcessor {
             thread_unload_delay: self.config.thread_unload_delay,
             skills_watcher: Arc::clone(&self.skills_watcher),
             turn_cost_worker: self.turn_cost_worker.clone(),
+            workflow_service: self.workflow_service.clone(),
         };
         let request_trace = request_context.request_trace();
         let config_manager = self.config_manager.clone();
