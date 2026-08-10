@@ -17,6 +17,7 @@ use crate::multi_agents::sub_agent_activity_summary;
 use codex_app_server_protocol::Thread;
 use codex_app_server_protocol::ThreadItem;
 use codex_app_server_protocol::UserInput;
+use codex_app_server_protocol::WorkflowResultReadStatus;
 use codex_protocol::ThreadId;
 use codex_protocol::items::UserMessageItem;
 use codex_utils_absolute_path::AbsolutePathBuf;
@@ -270,6 +271,22 @@ fn fallback_transcript_cell(item: &ThreadItem) -> Option<PlainHistoryCell> {
                     .into(),
             ]
         }
+        ThreadItem::WorkflowInputAnalysis(_) => {
+            vec!["workflow inputs analyzed".dim().into()]
+        }
+        ThreadItem::WorkflowResultRead(item) => {
+            let action = match item.status {
+                WorkflowResultReadStatus::InProgress => "workflow result read in progress",
+                WorkflowResultReadStatus::Completed => "workflow result read",
+                WorkflowResultReadStatus::Failed => "workflow result read failed",
+            };
+            let run_id = item
+                .run_id
+                .as_deref()
+                .map(|run_id| format!(": {run_id}"))
+                .unwrap_or_default();
+            vec![format!("{action}{run_id}").dim().into()]
+        }
         ThreadItem::EnteredReviewMode { review, .. } => {
             vec![vec!["review started: ".dim(), review.clone().into()].into()]
         }
@@ -287,3 +304,7 @@ fn fallback_transcript_cell(item: &ThreadItem) -> Option<PlainHistoryCell> {
     };
     (!lines.is_empty()).then(|| PlainHistoryCell::new(lines))
 }
+
+#[cfg(test)]
+#[path = "thread_transcript_tests.rs"]
+mod tests;

@@ -491,6 +491,8 @@ WHERE thread_id = ?
             | ThreadItem::WebSearch(_)
             | ThreadItem::ImageView { .. }
             | ThreadItem::Sleep(_)
+            | ThreadItem::WorkflowInputAnalysis(_)
+            | ThreadItem::WorkflowResultRead(_)
             | ThreadItem::ImageGeneration(_)
             | ThreadItem::EnteredReviewMode { .. }
             | ThreadItem::ExitedReviewMode { .. }

@@ -270,7 +270,11 @@ pub(crate) struct BottomPaneParams {
 
 impl BottomPane {
     pub fn new(params: BottomPaneParams) -> Self {
-        Self::new_with_composer_config(params, ChatComposerConfig::default())
+        let composer_config = ChatComposerConfig {
+            animations_enabled: params.animations_enabled,
+            ..ChatComposerConfig::default()
+        };
+        Self::new_with_composer_config(params, composer_config)
     }
 
     /// Construct a bottom pane with explicitly restricted composer behavior.
@@ -478,6 +482,11 @@ impl BottomPane {
 
     pub fn set_goal_command_enabled(&mut self, enabled: bool) {
         self.composer.set_goal_command_enabled(enabled);
+        self.request_redraw();
+    }
+
+    pub fn set_workflow_command_enabled(&mut self, enabled: bool) {
+        self.composer.set_workflow_command_enabled(enabled);
         self.request_redraw();
     }
 
