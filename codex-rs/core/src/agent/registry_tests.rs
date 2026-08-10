@@ -113,6 +113,122 @@ fn commit_holds_slot_until_release() {
 }
 
 #[test]
+fn unmetered_registration_does_not_consume_counted_capacity() {
+    let registry = Arc::new(AgentRegistry::default());
+    let unmetered_id = ThreadId::new();
+    registry
+        .reserve_unmetered_spawn_slot()
+        .commit(agent_metadata(unmetered_id));
+
+    let counted = registry
+        .reserve_counted_spawn_slot(Some(1))
+        .expect("unmetered registration should leave counted capacity available");
+    let counted_id = ThreadId::new();
+    counted.commit(agent_metadata(counted_id));
+
+    let err = registry
+        .reserve_counted_spawn_slot(Some(1))
+        .err()
+        .expect("the counted registration should consume capacity");
+    assert!(matches!(
+        err.details(),
+        CodexErrorDetails::AgentLimitReached { max_threads: 1 }
+    ));
+
+    registry.release_spawned_thread(unmetered_id);
+    assert!(registry.reserve_counted_spawn_slot(Some(1)).is_err());
+    registry.release_spawned_thread(counted_id);
+    assert!(registry.reserve_counted_spawn_slot(Some(1)).is_ok());
+}
+
+#[test]
+fn closed_agent_tombstones_are_bounded() {
+    let registry = Arc::new(AgentRegistry::default());
+    let mut closed_thread_ids = Vec::new();
+    for _ in 0..=MAX_CLOSED_AGENT_TOMBSTONES {
+        let thread_id = ThreadId::new();
+        closed_thread_ids.push(thread_id);
+        registry.remember_closed_agent(AgentRegistration {
+            metadata: agent_metadata(thread_id),
+            quota: AgentQuota::Unmetered,
+        });
+    }
+
+    assert!(
+        registry
+            .registration_for_close(closed_thread_ids[0])
+            .is_none()
+    );
+    assert!(
+        registry
+            .registration_for_close(*closed_thread_ids.last().expect("last id"))
+            .is_some()
+    );
+    assert_eq!(
+        registry
+            .active_agents
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .closed_agents
+            .len(),
+        MAX_CLOSED_AGENT_TOMBSTONES
+    );
+}
+
+#[test]
+fn closed_agent_completion_is_owner_scoped_and_routed_by_agent_id() {
+    let registry = Arc::new(AgentRegistry::default());
+    let owner = ThreadId::new();
+    let foreign_owner = ThreadId::new();
+    let first_agent = ThreadId::new();
+    let second_agent = ThreadId::new();
+    registry.register_root_thread(owner);
+    registry.register_root_thread(foreign_owner);
+
+    for (thread_id, output) in [
+        (first_agent, "first workflow output"),
+        (second_agent, "second workflow output"),
+    ] {
+        let registration = AgentRegistration {
+            metadata: AgentMetadata {
+                agent_id: Some(thread_id),
+                owning_root_thread_id: Some(owner),
+                ..Default::default()
+            },
+            quota: AgentQuota::Unmetered,
+        };
+        registry.remember_closed_agent(registration);
+        registry.remember_closed_agent_status(
+            thread_id,
+            AgentStatus::Completed(Some(output.to_string())),
+        );
+    }
+
+    assert_eq!(
+        registry.closed_agent_status(first_agent),
+        Some(AgentStatus::Completed(Some(
+            "first workflow output".to_string()
+        )))
+    );
+    assert_eq!(
+        registry.closed_agent_status(second_agent),
+        Some(AgentStatus::Completed(Some(
+            "second workflow output".to_string()
+        )))
+    );
+    assert!(
+        registry
+            .authorize_agent_access(owner, first_agent)
+            .is_some()
+    );
+    assert!(
+        registry
+            .authorize_agent_access(foreign_owner, first_agent)
+            .is_none()
+    );
+}
+
+#[test]
 fn releasing_one_spawned_thread_preserves_sibling_identity() {
     let registry = Arc::new(AgentRegistry::default());
     let first_id = ThreadId::new();
@@ -367,6 +483,43 @@ fn register_root_thread_indexes_root_path() {
         .reserve_spawn_slot(Some(1))
         .expect("releasing the uncounted root should not consume a spawn slot");
     drop(reservation);
+}
+
+#[test]
+fn authorization_requires_matching_owning_root() {
+    let registry = Arc::new(AgentRegistry::default());
+    let owning_root = ThreadId::new();
+    let foreign_root = ThreadId::new();
+    let same_owner_agent = ThreadId::new();
+    let same_owner_descendant = ThreadId::new();
+    let foreign_agent = ThreadId::new();
+    registry.register_root_thread(owning_root);
+    for (thread_id, owning_root_thread_id) in [
+        (same_owner_agent, owning_root),
+        (same_owner_descendant, owning_root),
+        (foreign_agent, foreign_root),
+    ] {
+        registry
+            .reserve_unmetered_spawn_slot()
+            .commit(AgentMetadata {
+                agent_id: Some(thread_id),
+                owning_root_thread_id: Some(owning_root_thread_id),
+                ..Default::default()
+            });
+    }
+
+    assert_eq!(
+        registry.authorize_agent_access(owning_root, same_owner_agent),
+        registry.agent_metadata_for_thread(same_owner_agent)
+    );
+    assert_eq!(
+        registry.authorize_agent_access(same_owner_descendant, same_owner_agent),
+        registry.agent_metadata_for_thread(same_owner_agent)
+    );
+    assert_eq!(
+        registry.authorize_agent_access(owning_root, foreign_agent),
+        None
+    );
 }
 
 #[test]

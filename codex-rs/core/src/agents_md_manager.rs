@@ -13,6 +13,7 @@ use tokio::sync::Mutex;
 /// Owns the inputs and cached result of AGENTS.md discovery for a session.
 pub(crate) struct AgentsMdManager {
     user_instructions: Option<UserInstructions>,
+    frozen: bool,
     cache: Mutex<AgentsMdCache>,
 }
 
@@ -29,7 +30,25 @@ impl AgentsMdManager {
         Self {
             user_instructions: user_instructions
                 .filter(|instructions| !instructions.text.trim().is_empty()),
+            frozen: false,
             cache: Mutex::new(AgentsMdCache::default()),
+        }
+    }
+
+    pub(crate) fn new_frozen(
+        user_instructions: Option<UserInstructions>,
+        loaded: Option<Arc<LoadedAgentsMd>>,
+    ) -> Self {
+        Self {
+            user_instructions: user_instructions
+                .filter(|instructions| !instructions.text.trim().is_empty()),
+            frozen: true,
+            cache: Mutex::new(AgentsMdCache {
+                selections: None,
+                active_project_trust_level: None,
+                windows_sandbox_level: None,
+                loaded,
+            }),
         }
     }
 
@@ -40,6 +59,9 @@ impl AgentsMdManager {
         environments: &TurnEnvironmentSnapshot,
         windows_sandbox_level: WindowsSandboxLevel,
     ) -> io::Result<()> {
+        if self.frozen {
+            return Ok(());
+        }
         let selections = environments
             .turn_environments()
             .map(|environment| environment.selection.clone())

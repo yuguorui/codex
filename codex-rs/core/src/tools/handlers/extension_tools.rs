@@ -1,27 +1,20 @@
 use std::sync::Arc;
-use std::sync::Weak;
 
-use codex_protocol::items::TurnItem;
-use codex_protocol::protocol::Event;
-use codex_protocol::protocol::EventMsg;
 use codex_tools::ConversationHistory;
-use codex_tools::ExtensionTurnItem;
 use codex_tools::ResponsesApiNamespaceTool;
+use codex_tools::ToolApprovalReviewMode;
 use codex_tools::ToolCall as ExtensionToolCall;
-use codex_tools::ToolEnvironment;
 use codex_tools::ToolName;
 use codex_tools::ToolSearchInfo;
 use codex_tools::ToolSpec;
-use codex_tools::TurnItemEmissionFuture;
-use codex_tools::TurnItemEmitter;
 use codex_utils_string::to_ascii_json_string;
 
-use crate::sandboxing::SandboxPermissions;
-use crate::session::session::Session;
-use crate::session::turn_context::TurnContext;
 use crate::tools::context::ToolInvocation;
 use crate::tools::context::ToolPayload;
-use crate::tools::handlers::apply_granted_turn_permissions;
+use crate::tools::handlers::extension_agent_configuration::project_agent_configuration;
+use crate::tools::handlers::extension_environment::project_execution_environments;
+use crate::tools::handlers::extension_turn_activity::CoreTurnActivitySubscription;
+use crate::tools::handlers::extension_turn_item_emitter::CoreTurnItemEmitter;
 use crate::tools::registry::CoreToolRuntime;
 use crate::tools::registry::ToolExecutor;
 use crate::turn_metadata::McpTurnMetadataContext;
@@ -45,6 +38,10 @@ impl ToolExecutor<ToolInvocation> for ExtensionToolAdapter {
 
     fn exposure(&self) -> crate::tools::registry::ToolExposure {
         self.0.exposure()
+    }
+
+    fn availability(&self) -> codex_tools::ToolAvailability {
+        self.0.availability()
     }
 
     fn supports_parallel_tool_calls(&self) -> bool {
@@ -91,54 +88,6 @@ impl CoreToolRuntime for ExtensionToolAdapter {
     }
 }
 
-struct CoreTurnItemEmitter {
-    session: Weak<Session>,
-    turn: Weak<TurnContext>,
-}
-
-async fn emit_legacy_events(session: &Session, turn: &TurnContext, legacy_events: Vec<EventMsg>) {
-    for msg in legacy_events {
-        session
-            .send_event_raw(Event {
-                id: turn.sub_id.clone(),
-                msg,
-            })
-            .await;
-    }
-}
-
-impl TurnItemEmitter for CoreTurnItemEmitter {
-    fn emit_started<'a>(&'a self, item: ExtensionTurnItem) -> TurnItemEmissionFuture<'a> {
-        Box::pin(async move {
-            let (Some(session), Some(turn)) = (self.session.upgrade(), self.turn.upgrade()) else {
-                return;
-            };
-            let ExtensionTurnItem {
-                item,
-                legacy_events,
-            } = item;
-            let item = TurnItem::Extension(item);
-            session.emit_turn_item_started(turn.as_ref(), &item).await;
-            emit_legacy_events(session.as_ref(), turn.as_ref(), legacy_events).await;
-        })
-    }
-
-    fn emit_completed<'a>(&'a self, item: ExtensionTurnItem) -> TurnItemEmissionFuture<'a> {
-        Box::pin(async move {
-            let (Some(session), Some(turn)) = (self.session.upgrade(), self.turn.upgrade()) else {
-                return;
-            };
-            let ExtensionTurnItem {
-                item,
-                legacy_events,
-            } = item;
-            let item = TurnItem::Extension(item);
-            session.emit_turn_item_completed(turn.as_ref(), item).await;
-            emit_legacy_events(session.as_ref(), turn.as_ref(), legacy_events).await;
-        })
-    }
-}
-
 async fn to_extension_call(invocation: &ToolInvocation) -> ExtensionToolCall {
     let conversation_history =
         ConversationHistory::new(invocation.session.clone_history().await.into_raw_items());
@@ -146,49 +95,61 @@ async fn to_extension_call(invocation: &ToolInvocation) -> ExtensionToolCall {
         .turn
         .turn_metadata_state
         .current_meta_value_for_mcp_request(McpTurnMetadataContext {
-            model: invocation.turn.model_info.slug.as_str(),
-            reasoning_effort: invocation.turn.effective_reasoning_effort(),
+            model: invocation.step_context.model_info.slug.as_str(),
+            reasoning_effort: invocation.step_context.reasoning_effort.clone(),
         })
         .and_then(|metadata| to_ascii_json_string(&metadata).ok());
-    let mut environments = Vec::new();
-    for environment in invocation.step_context.environments.turn_environments() {
-        // TODO(anp): Migrate extension ToolEnvironment and granted-permission lookup to PathUri
-        // so extensions can receive foreign environment cwd values.
-        let Ok(native_cwd) = environment.cwd().to_abs_path() else {
-            continue;
-        };
-        let additional_permissions = apply_granted_turn_permissions(
-            invocation.session.as_ref(),
-            &environment.selection.environment_id,
-            native_cwd.as_path(),
-            SandboxPermissions::UseDefault,
-            /*additional_permissions*/ None,
-        )
-        .await
-        .additional_permissions;
-        let file_system_sandbox_context = invocation
-            .turn
-            .file_system_sandbox_context(additional_permissions, environment);
-        environments.push(ToolEnvironment {
-            environment_id: environment.selection.environment_id.clone(),
-            cwd: native_cwd,
-            file_system: environment.environment.get_filesystem(),
-            file_system_sandbox_context,
-        });
-    }
+    let turn_state = invocation
+        .session
+        .input_queue
+        .turn_state_for_sub_id(&invocation.session.active_turn, &invocation.turn.sub_id)
+        .await;
+    let (activity_rx, pending_activity) = invocation
+        .session
+        .input_queue
+        .subscribe_activity(turn_state.as_deref())
+        .await;
+    let strict_auto_review = if let Some(turn_state) = &turn_state {
+        turn_state.lock().await.strict_auto_review_enabled()
+    } else {
+        false
+    };
+    let approval_review_mode = if strict_auto_review {
+        ToolApprovalReviewMode::StrictAutomatic
+    } else {
+        match invocation.step_context.approvals_reviewer {
+            codex_protocol::config_types::ApprovalsReviewer::User => ToolApprovalReviewMode::User,
+            codex_protocol::config_types::ApprovalsReviewer::AutoReview => {
+                ToolApprovalReviewMode::Automatic
+            }
+        }
+    };
+    let turn_activity = Arc::new(CoreTurnActivitySubscription::new(
+        activity_rx,
+        pending_activity,
+        turn_state,
+    ));
+    let (environments, execution_environments) = project_execution_environments(invocation).await;
+    let agent_configuration = project_agent_configuration(invocation).await;
     ExtensionToolCall {
         turn_id: invocation.turn.sub_id.clone(),
         call_id: invocation.call_id.clone(),
         tool_name: invocation.tool_name.clone(),
-        model: invocation.turn.model_info.slug.clone(),
+        model: invocation.step_context.model_info.slug.clone(),
         codex_turn_metadata,
-        truncation_policy: invocation.turn.model_info.truncation_policy.into(),
+        truncation_policy: invocation.step_context.model_info.truncation_policy.into(),
         conversation_history,
-        turn_item_emitter: Arc::new(CoreTurnItemEmitter {
-            session: Arc::downgrade(&invocation.session),
-            turn: Arc::downgrade(&invocation.turn),
-        }),
+        turn_item_emitter: Arc::new(CoreTurnItemEmitter::new(
+            Arc::downgrade(&invocation.session),
+            Arc::downgrade(&invocation.turn),
+            invocation.call_id.clone(),
+            invocation.tool_name.clone(),
+            approval_review_mode,
+            turn_activity,
+            execution_environments,
+        )),
         environments,
+        agent_configuration: Some(agent_configuration),
         payload: invocation.payload.clone(),
     }
 }
@@ -198,25 +159,24 @@ mod tests {
     use std::sync::Arc;
 
     use codex_extension_items::ExtensionItem;
-    use codex_extension_items::image_generation::ImageGenerationItem;
     use codex_extension_items::web_search::WebSearchItem;
+    use codex_protocol::config_types::ApprovalsReviewer;
+    use codex_protocol::config_types::ReasoningSummary;
     use codex_protocol::items::TurnItem;
     use codex_protocol::models::ContentItem;
     use codex_protocol::models::ResponseItem;
+    use codex_protocol::openai_models::ReasoningEffort;
+    use codex_protocol::protocol::AskForApproval;
     use codex_protocol::protocol::EventMsg;
-    use codex_protocol::protocol::ImageGenerationBeginEvent;
-    use codex_protocol::protocol::ImageGenerationEndEvent;
     use codex_tools::ExtensionTurnItem;
-    use codex_utils_absolute_path::test_support::PathExt;
-    use codex_utils_absolute_path::test_support::test_path_buf;
     use core_test_support::responses::strip_response_item_id;
     use core_test_support::responses::strip_response_item_ids;
     use pretty_assertions::assert_eq;
     use serde_json::json;
     use tokio::sync::Mutex;
 
-    use super::CoreTurnItemEmitter;
     use super::ExtensionToolAdapter;
+    use crate::config::Config;
     use crate::session::step_context::StepContext;
     use crate::tools::context::ToolCallSource;
     use crate::tools::context::ToolInvocation;
@@ -372,8 +332,6 @@ mod tests {
         let weak_session = Arc::downgrade(&session);
         let weak_turn = Arc::downgrade(&turn);
         let turn_id = turn.sub_id.clone();
-        let model = turn.model_info.slug.clone();
-        let truncation_policy = turn.model_info.truncation_policy.into();
         let expected_sandbox_cwds = turn
             .environments
             .turn_environments()
@@ -408,7 +366,34 @@ mod tests {
             strip_response_item_id(raw_history_item.item),
             expected_history_item
         );
-        let step_context = StepContext::for_test(Arc::clone(&turn));
+        let expected_base_instructions = session.get_base_instructions().await;
+        let mut step_context = StepContext::for_test(Arc::clone(&turn));
+        let step = Arc::get_mut(&mut step_context).expect("unshared test step context");
+        let mut model_info = (*step.model_info).clone();
+        model_info.slug = "effective-step-model".to_string();
+        step.model_info = Arc::new(model_info);
+        step.reasoning_effort = Some(ReasoningEffort::High);
+        step.reasoning_summary = ReasoningSummary::Detailed;
+        step.service_tier = Some("priority".to_string());
+        step.approval_policy = AskForApproval::Never;
+        step.approvals_reviewer = ApprovalsReviewer::AutoReview;
+        let expected_model = step.model_info.slug.clone();
+        let expected_truncation_policy = step.model_info.truncation_policy.into();
+        let mut expected_agent_config = (*turn.config).clone();
+        expected_agent_config.model = Some(expected_model.clone());
+        expected_agent_config.model_reasoning_effort = Some(ReasoningEffort::High);
+        expected_agent_config.model_reasoning_summary = Some(ReasoningSummary::Detailed);
+        expected_agent_config.service_tier = Some("priority".to_string());
+        expected_agent_config.permissions.approval_policy =
+            codex_config::Constrained::allow_only(AskForApproval::Never);
+        expected_agent_config.approvals_reviewer = ApprovalsReviewer::AutoReview;
+        expected_agent_config.base_instructions = Some(expected_base_instructions.text);
+        expected_agent_config.base_instructions_provenance = expected_base_instructions.provenance;
+        expected_agent_config
+            .developer_instructions
+            .clone_from(&turn.developer_instructions);
+        expected_agent_config.personality = turn.personality;
+        expected_agent_config.model_provider = turn.provider.info().clone();
         let invocation = ToolInvocation {
             session,
             step_context,
@@ -436,8 +421,13 @@ mod tests {
             captured_call.tool_name,
             codex_tools::ToolName::plain("extension_echo")
         );
-        assert_eq!(captured_call.model, model);
-        assert_eq!(captured_call.truncation_policy, truncation_policy);
+        assert_eq!(captured_call.model, expected_model);
+        assert_eq!(captured_call.truncation_policy, expected_truncation_policy);
+        assert_eq!(
+            captured_call.agent_configuration::<Config>(),
+            Some(&expected_agent_config)
+        );
+        assert!(captured_call.turn_activity().is_some());
         assert_eq!(
             captured_call
                 .environments
@@ -473,81 +463,5 @@ mod tests {
                 results: None,
             }
         );
-    }
-
-    #[tokio::test]
-    async fn image_generation_publication_preserves_extension_saved_path() {
-        let (session, turn, rx) = crate::session::tests::make_session_and_context_with_rx().await;
-        let expected_path = test_path_buf("/tmp/extension-claimed.png").abs();
-        let emitter = CoreTurnItemEmitter {
-            session: Arc::downgrade(&session),
-            turn: Arc::downgrade(&turn),
-        };
-        let expected_started_item = ExtensionItem::ImageGeneration(ImageGenerationItem {
-            id: "call-image".to_string(),
-            status: "in_progress".to_string(),
-            revised_prompt: None,
-            result: String::new(),
-            transparent_background: None,
-            failure: None,
-            saved_path: None,
-        });
-        let expected_completed_item = ExtensionItem::ImageGeneration(ImageGenerationItem {
-            id: "call-image".to_string(),
-            status: "completed".to_string(),
-            revised_prompt: Some("A tiny blue square".to_string()),
-            result: "cG5n".to_string(),
-            transparent_background: Some(true),
-            failure: None,
-            saved_path: Some(expected_path.clone()),
-        });
-        codex_tools::TurnItemEmitter::emit_started(
-            &emitter,
-            ExtensionTurnItem {
-                item: expected_started_item.clone(),
-                legacy_events: vec![EventMsg::ImageGenerationBegin(ImageGenerationBeginEvent {
-                    call_id: "call-image".to_string(),
-                })],
-            },
-        )
-        .await;
-        codex_tools::TurnItemEmitter::emit_completed(
-            &emitter,
-            ExtensionTurnItem {
-                item: expected_completed_item.clone(),
-                legacy_events: vec![EventMsg::ImageGenerationEnd(ImageGenerationEndEvent {
-                    call_id: "call-image".to_string(),
-                    status: "completed".to_string(),
-                    revised_prompt: Some("A tiny blue square".to_string()),
-                    result: "cG5n".to_string(),
-                    transparent_background: Some(true),
-                    failure: None,
-                    saved_path: Some(expected_path.clone()),
-                })],
-            },
-        )
-        .await;
-
-        let started = rx.recv().await.expect("item started event");
-        let EventMsg::ItemStarted(started) = started.msg else {
-            panic!("expected item started event");
-        };
-        let TurnItem::Extension(started_item) = started.item else {
-            panic!("expected extension item");
-        };
-        let begin = rx.recv().await.expect("legacy image start event");
-        assert!(matches!(begin.msg, EventMsg::ImageGenerationBegin(_)));
-        let completed = rx.recv().await.expect("item completed event");
-        let EventMsg::ItemCompleted(completed) = completed.msg else {
-            panic!("expected item completed event");
-        };
-        let TurnItem::Extension(completed_item) = completed.item else {
-            panic!("expected extension item");
-        };
-        let end = rx.recv().await.expect("legacy image end event");
-        assert!(matches!(end.msg, EventMsg::ImageGenerationEnd(_)));
-
-        assert_eq!(started_item, expected_started_item);
-        assert_eq!(completed_item, expected_completed_item);
     }
 }
