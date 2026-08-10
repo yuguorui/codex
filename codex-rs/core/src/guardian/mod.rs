@@ -12,6 +12,7 @@
 //! 3. Fail closed on timeout, execution failure, or malformed output.
 //! 4. Apply the guardian's explicit allow/deny outcome.
 
+mod approval_artifact;
 mod approval_request;
 mod feedback;
 mod metrics;
@@ -37,6 +38,7 @@ use crate::session::step_settings::ResolvedStepSettings;
 use crate::session::turn_context::TurnContext;
 use crate::tools::sandboxing::ApprovalRequestReasons;
 
+pub(crate) use approval_artifact::GuardianApprovalArtifact;
 pub(crate) use approval_request::GuardianApprovalRequest;
 pub(crate) use approval_request::GuardianMcpAnnotations;
 pub(crate) use approval_request::GuardianNetworkAccessTrigger;

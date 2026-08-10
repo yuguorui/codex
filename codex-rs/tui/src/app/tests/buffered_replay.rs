@@ -24,6 +24,7 @@ fn completed(thread: &str) -> ServerNotification {
             phase: None,
             memory_citation: None,
             delivery: None,
+            questions: None,
         },
     })
 }

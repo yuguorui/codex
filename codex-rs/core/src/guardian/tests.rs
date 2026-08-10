@@ -925,7 +925,7 @@ fn collect_guardian_transcript_entries(
     history: &dyn codex_guardian_context::SectionHistory,
     node_repl_result_token_limit: usize,
 ) -> Vec<ConversationTranscriptEntry> {
-    prompt::collect_guardian_context(history, node_repl_result_token_limit, &[], &[])
+    prompt::collect_guardian_context(history, node_repl_result_token_limit, &[], &[], None)
         .expect("collect Guardian context")
         .transcript
 }
@@ -1187,6 +1187,49 @@ fn collect_guardian_transcript_entries_preserves_named_unpaired_tool_sources() {
 }
 
 #[test]
+fn extension_approval_excludes_the_hash_bound_pending_call_from_transcript() {
+    let items = vec![
+        ResponseItem::FunctionCall {
+            id: None,
+            name: "Workflow".to_string(),
+            namespace: None,
+            arguments: "large action contents".repeat(1_000),
+            call_id: "pending-workflow".to_string(),
+            encrypted_function_args: None,
+            internal_chat_message_metadata_passthrough: None,
+        },
+        ResponseItem::FunctionCall {
+            id: None,
+            name: "read_file".to_string(),
+            namespace: None,
+            arguments: "{\"path\":\"README.md\"}".to_string(),
+            call_id: "earlier-read".to_string(),
+            encrypted_function_args: None,
+            internal_chat_message_metadata_passthrough: None,
+        },
+    ];
+
+    let entries = prompt::collect_guardian_context(
+        &items,
+        GUARDIAN_MAX_TOOL_ENTRY_TOKENS,
+        &[],
+        &[],
+        Some("pending-workflow"),
+    )
+    .expect("collect Guardian context")
+    .transcript;
+
+    assert_eq!(
+        entries,
+        vec![ConversationTranscriptEntry {
+            kind: ConversationTranscriptEntryKind::ToolCall("tool read_file call".to_string()),
+            text: "{\"path\":\"README.md\"}".to_string(),
+            original_bytes: "{\"path\":\"README.md\"}".len(),
+        }]
+    );
+}
+
+#[test]
 fn guardian_truncate_text_keeps_prefix_suffix_and_xml_marker() {
     let content = "prefix ".repeat(200) + &" suffix".repeat(200);
 
@@ -1278,8 +1321,8 @@ fn guardian_approval_request_to_json_renders_mcp_tool_call_shape() -> serde_json
 }
 
 #[tokio::test(flavor = "current_thread")]
-async fn build_guardian_prompt_items_keeps_required_node_repl_reviews_generic() -> anyhow::Result<()>
-{
+async fn build_guardian_prompt_items_uses_dedicated_prompt_for_required_node_repl_reviews()
+-> anyhow::Result<()> {
     let (session, mut turn) =
         guardian_test_session_and_turn_with_base_url("http://localhost").await;
     update_turn_settings_for_test(
@@ -1303,9 +1346,10 @@ async fn build_guardian_prompt_items_keeps_required_node_repl_reviews_generic() 
     .await?;
 
     let text = guardian_prompt_text(&prompt.items);
-    assert!(text.contains("Assess the exact planned action below."));
+    assert!(!text.contains("Assess the exact planned action below."));
     assert!(text.contains("Retry reason:\nRetry the authorized browser inspection."));
-    assert!(text.contains("Planned action JSON:"));
+    assert!(text.contains("Node REPL action JSON:"));
+    assert!(text.contains("Distinguish preparation"));
     assert!(text.contains("\"tool\": \"mcp_tool_call\""));
     assert!(text.contains("\"server\": \"node_repl\""));
     assert!(text.contains("\"tool_name\": \"js\""));

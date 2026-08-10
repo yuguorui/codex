@@ -445,6 +445,7 @@ mod turn_runtime;
 use self::turn_lifecycle::TurnLifecycleState;
 mod usage;
 mod user_messages;
+mod workflows;
 mod working_directory;
 use self::user_messages::PendingSteer;
 use self::user_messages::PendingSteerCompareKey;
@@ -469,6 +470,7 @@ use self::user_messages::remap_placeholders_for_message;
 use self::user_messages::user_message_display_for_history;
 use self::user_messages::user_message_for_restore;
 use self::user_messages::user_message_preview_text;
+use self::workflows::WorkflowUiState;
 mod warnings;
 use self::warnings::WarningDisplayState;
 pub(crate) use crate::branch_summary::StatusLineGitSummary;
@@ -669,6 +671,8 @@ pub(crate) struct ChatWidget {
     active_hook_cell: Option<HookCell>,
     // Reused for built-in pet CDN requests so redirects remain route-aware.
     pub(crate) pet_http_client: codex_http_client::RouteAwareClientPool,
+    // Dynamic workflows remain visible without replacing streamed answer/tool cells.
+    workflows: WorkflowUiState,
     // Ambient companion rendered over the transcript area, never inside the footer rows.
     ambient_pet: Option<crate::pets::AmbientPet>,
     pet_picker_preview_state: crate::pets::PetPickerPreviewState,
@@ -1211,6 +1215,7 @@ impl ChatWidget {
     pub(crate) fn pre_draw_tick(&mut self) {
         self.update_due_hook_visibility();
         self.schedule_hook_timer_if_needed();
+        self.schedule_workflow_frame_if_needed();
         self.bottom_pane.pre_draw_tick();
         if let Some(pet) = self.ambient_pet.as_ref() {
             pet.schedule_next_frame();
@@ -1917,9 +1922,14 @@ impl ChatWidget {
     /// the main viewport updates.
     pub(crate) fn active_cell_transcript_key(&self) -> Option<ActiveCellTranscriptKey> {
         let cell = self.transcript.active_cell.as_ref();
+        let workflow_cell = self.workflows.has_active_runs().then_some(&self.workflows);
         let token_activity_cell = self.pending_token_activity_output();
         let rate_limit_reset_hint = self.pending_rate_limit_reset_hint();
-        if cell.is_none() && token_activity_cell.is_none() && rate_limit_reset_hint.is_none() {
+        if cell.is_none()
+            && workflow_cell.is_none()
+            && token_activity_cell.is_none()
+            && rate_limit_reset_hint.is_none()
+        {
             return None;
         }
         Some(ActiveCellTranscriptKey {
@@ -1927,7 +1937,9 @@ impl ChatWidget {
             is_stream_continuation: cell
                 .map(|cell| cell.is_stream_continuation())
                 .unwrap_or(false),
-            animation_tick: cell.and_then(|cell| cell.transcript_animation_tick()),
+            animation_tick: cell
+                .and_then(|cell| cell.transcript_animation_tick())
+                .or_else(|| workflow_cell.and_then(HistoryCell::transcript_animation_tick)),
         })
     }
 
@@ -1944,6 +1956,13 @@ impl ChatWidget {
         let mut lines = Vec::new();
         if let Some(cell) = self.transcript.active_cell.as_ref() {
             lines.extend(cell.transcript_hyperlink_lines(width));
+        }
+        if self.workflows.has_active_runs() {
+            let workflow_lines = self.workflows.transcript_hyperlink_lines(width);
+            if !workflow_lines.is_empty() && !lines.is_empty() {
+                lines.push(HyperlinkLine::from(""));
+            }
+            lines.extend(workflow_lines);
         }
         if let Some(token_activity_cell) = self.pending_token_activity_output() {
             let token_activity_lines = token_activity_cell.transcript_hyperlink_lines(width);

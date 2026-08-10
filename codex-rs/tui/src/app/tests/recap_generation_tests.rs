@@ -183,7 +183,28 @@ stream_max_retries = 0
     );
     assert!(prompt.len() <= recap::RECAP_PROMPT_MAX_BYTES);
     assert_eq!(request["text"]["format"]["type"], "json_schema");
-    assert_eq!(request["tools"], serde_json::json!([]));
+    let tools = request["tools"]
+        .as_array()
+        .expect("recap request should carry its thread tools");
+    let mut tool_names = tools
+        .iter()
+        .map(|tool| tool["name"].as_str().expect("tool name"))
+        .collect::<Vec<_>>();
+    tool_names.sort_unstable();
+    assert_eq!(
+        tool_names,
+        vec![
+            "ListWorkflowAgents",
+            "ListWorkflows",
+            "ReadWorkflowResult",
+            "RetryWorkflowAgent",
+            "SkipWorkflowAgent",
+            "StopWorkflow",
+            "WaitWorkflow",
+            "WaitWorkflows",
+            "Workflow",
+        ]
+    );
 
     app_server.shutdown().await?;
     model_server.shutdown().await;
