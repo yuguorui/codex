@@ -1629,6 +1629,8 @@ mod tests {
     use crate::protocol::v2::CommandExecutionSource;
     use codex_extension_items::ExtensionItem as CoreExtensionItem;
     use codex_extension_items::sleep::SleepItem as CoreSleepItem;
+    use codex_extension_items::workflow::WorkflowResultReadItem as CoreWorkflowResultReadItem;
+    use codex_extension_items::workflow::WorkflowResultReadStatus;
     use codex_protocol::ThreadId;
     use codex_protocol::dynamic_tools::DynamicToolCallOutputContentItem as CoreDynamicToolCallOutputContentItem;
     use codex_protocol::items::CommandExecutionItem as CoreCommandExecutionItem;
@@ -2123,6 +2125,69 @@ mod tests {
                 imagegen_request_id: None,
             })]
         );
+    }
+
+    #[test]
+    fn workflow_result_read_lifecycle_updates_one_history_item() {
+        for terminal_status in [
+            WorkflowResultReadStatus::Completed,
+            WorkflowResultReadStatus::Failed,
+        ] {
+            let turn_id = "turn-workflow-read";
+            let thread_id = ThreadId::new();
+            let mut builder = ThreadHistoryBuilder::new();
+            builder.handle_event(&EventMsg::TurnStarted(TurnStartedEvent {
+                turn_id: turn_id.to_string(),
+                trace_id: None,
+                started_at: None,
+                model_context_window: None,
+                collaboration_mode_kind: Default::default(),
+            }));
+            builder.handle_event(&EventMsg::ItemStarted(ItemStartedEvent {
+                thread_id,
+                turn_id: turn_id.to_string(),
+                item: CoreTurnItem::Extension(CoreExtensionItem::WorkflowResultRead(
+                    CoreWorkflowResultReadItem {
+                        id: "read-workflow-result".to_string(),
+                        run_id: Some("wf_history".to_string()),
+                        status: WorkflowResultReadStatus::InProgress,
+                    },
+                )),
+                started_at_ms: 1,
+            }));
+
+            assert_eq!(
+                builder.active_turn_snapshot().expect("active turn").items,
+                vec![ThreadItem::WorkflowResultRead(CoreWorkflowResultReadItem {
+                    id: "read-workflow-result".to_string(),
+                    run_id: Some("wf_history".to_string()),
+                    status: WorkflowResultReadStatus::InProgress,
+                })]
+            );
+
+            builder.handle_event(&EventMsg::ItemCompleted(ItemCompletedEvent {
+                thread_id,
+                turn_id: turn_id.to_string(),
+                item: CoreTurnItem::Extension(CoreExtensionItem::WorkflowResultRead(
+                    CoreWorkflowResultReadItem {
+                        id: "read-workflow-result".to_string(),
+                        run_id: Some("wf_history".to_string()),
+                        status: terminal_status,
+                    },
+                )),
+                started_at_ms: Some(1),
+                completed_at_ms: 2,
+            }));
+
+            assert_eq!(
+                builder.active_turn_snapshot().expect("active turn").items,
+                vec![ThreadItem::WorkflowResultRead(CoreWorkflowResultReadItem {
+                    id: "read-workflow-result".to_string(),
+                    run_id: Some("wf_history".to_string()),
+                    status: terminal_status,
+                })]
+            );
+        }
     }
 
     #[test]

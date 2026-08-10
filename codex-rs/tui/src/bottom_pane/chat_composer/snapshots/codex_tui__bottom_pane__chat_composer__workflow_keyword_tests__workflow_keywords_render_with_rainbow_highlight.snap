@@ -1,0 +1,6 @@
+---
+source: tui/src/bottom_pane/chat_composer/workflow_keyword_tests.rs
+expression: "format!(\"text:    {}\\ncolored: {}\", row.trim_end(), colored.trim_end())"
+---
+text:    › Run workflow, then ULTRACODE; workflows also shines.
+colored:       ^^^^^^^^       ^^^^^^^^^  ^^^^^^^^^

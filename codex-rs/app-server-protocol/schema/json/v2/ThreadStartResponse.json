@@ -2023,6 +2023,58 @@
           "type": "object"
         },
         {
+          "description": "Display item emitted while a Workflow agent analyzes its injected inputs.",
+          "properties": {
+            "id": {
+              "type": "string"
+            },
+            "type": {
+              "enum": [
+                "workflowInputAnalysis"
+              ],
+              "title": "WorkflowInputAnalysisThreadItemType",
+              "type": "string"
+            }
+          },
+          "required": [
+            "id",
+            "type"
+          ],
+          "title": "WorkflowInputAnalysisThreadItem",
+          "type": "object"
+        },
+        {
+          "description": "Display item emitted while the owning model reads a Workflow result.",
+          "properties": {
+            "id": {
+              "type": "string"
+            },
+            "runId": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "status": {
+              "$ref": "#/definitions/WorkflowResultReadStatus"
+            },
+            "type": {
+              "enum": [
+                "workflowResultRead"
+              ],
+              "title": "WorkflowResultReadThreadItemType",
+              "type": "string"
+            }
+          },
+          "required": [
+            "id",
+            "status",
+            "type"
+          ],
+          "title": "WorkflowResultReadThreadItem",
+          "type": "object"
+        },
+        {
           "properties": {
             "failure": {
               "anyOf": [
@@ -2704,6 +2756,15 @@
           "type": "object"
         }
       ]
+    },
+    "WorkflowResultReadStatus": {
+      "description": "Lifecycle state of a Workflow result read displayed by the host.",
+      "enum": [
+        "inProgress",
+        "completed",
+        "failed"
+      ],
+      "type": "string"
     }
   },
   "properties": {
