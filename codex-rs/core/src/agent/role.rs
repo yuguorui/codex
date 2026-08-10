@@ -36,7 +36,7 @@ const AGENT_TYPE_UNAVAILABLE_ERROR: &str = "agent type is currently not availabl
 /// the caller's current `model_provider` and `service_tier` remain sticky runtime choices unless
 /// the role explicitly sets the corresponding top-level config key. Rebuilding the config without
 /// those overrides would make a spawned agent silently fall back to default settings.
-pub(crate) async fn apply_role_to_config(
+pub async fn apply_role_to_config(
     config: &mut Config,
     role_name: Option<&str>,
 ) -> Result<(), String> {

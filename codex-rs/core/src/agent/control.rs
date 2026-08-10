@@ -89,6 +89,13 @@ pub(crate) struct ListedAgent {
     pub(crate) agent_status: AgentStatus,
 }
 
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub(crate) enum RolloutBudgetEnforcement {
+    #[default]
+    Enforce,
+    Observe,
+}
+
 /// Control-plane handle for multi-agent operations.
 /// `AgentControl` is held by each session (via `SessionServices`). It provides capability to
 /// spawn new agents and the inter-agent communication layer.
@@ -111,6 +118,7 @@ pub(crate) struct AgentControl {
     agent_execution_limiter: Arc<AgentExecutionLimiter>,
     /// Session-scoped state shared by the root thread and every cloned sub-agent control handle.
     rollout_budget: Arc<RolloutBudget>,
+    rollout_budget_enforcement: RolloutBudgetEnforcement,
 }
 
 impl Default for AgentControl {
@@ -130,6 +138,20 @@ impl AgentControl {
         thread_id_generator: ThreadIdGenerator,
         rollout_budget: Option<RolloutBudgetConfig>,
     ) -> Self {
+        Self::new_with_rollout_budget_enforcement(
+            manager,
+            thread_id_generator,
+            rollout_budget,
+            RolloutBudgetEnforcement::Enforce,
+        )
+    }
+
+    pub(crate) fn new_with_rollout_budget_enforcement(
+        manager: Weak<ThreadManagerState>,
+        thread_id_generator: ThreadIdGenerator,
+        rollout_budget: Option<RolloutBudgetConfig>,
+        rollout_budget_enforcement: RolloutBudgetEnforcement,
+    ) -> Self {
         let control = Self {
             session_id: SessionId::default(),
             manager,
@@ -138,11 +160,26 @@ impl AgentControl {
             v2_residency: Arc::default(),
             agent_execution_limiter: Arc::default(),
             rollout_budget: Arc::default(),
+            rollout_budget_enforcement,
         };
         if let Some(rollout_budget) = rollout_budget {
             control.rollout_budget.configure(rollout_budget);
         }
         control
+    }
+
+    pub(crate) fn new_with_shared_rollout_budget(
+        manager: Weak<ThreadManagerState>,
+        source: &Self,
+        rollout_budget_enforcement: RolloutBudgetEnforcement,
+    ) -> Self {
+        Self {
+            manager,
+            thread_id_generator: Arc::clone(&source.thread_id_generator),
+            rollout_budget: Arc::clone(&source.rollout_budget),
+            rollout_budget_enforcement,
+            ..Default::default()
+        }
     }
 
     pub(crate) fn with_session_id(mut self, session_id: SessionId, max_threads: usize) -> Self {
@@ -161,6 +198,10 @@ impl AgentControl {
 
     pub(crate) fn rollout_budget(&self) -> &RolloutBudget {
         self.rollout_budget.as_ref()
+    }
+
+    pub(crate) fn enforces_rollout_budget(&self) -> bool {
+        self.rollout_budget_enforcement == RolloutBudgetEnforcement::Enforce
     }
 
     /// Send rich user input items to an existing agent thread.

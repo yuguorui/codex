@@ -55,6 +55,9 @@ use crate::request_permissions::RequestPermissionsEvent;
 use crate::request_permissions::RequestPermissionsResponse;
 use crate::request_user_input::RequestUserInputResponse;
 use crate::user_input::UserInput;
+use crate::workflow::WorkflowCompletedEvent;
+use crate::workflow::WorkflowProgressEvent;
+use crate::workflow::WorkflowStartedEvent;
 use codex_utils_absolute_path::AbsolutePathBuf;
 use codex_utils_path_uri::PathUri;
 use schemars::JsonSchema;
@@ -1372,6 +1375,15 @@ pub enum EventMsg {
 
     /// A durable thread-scoped user-message queue changed.
     ThreadQueueChanged(ThreadQueueChangedEvent),
+
+    /// A local dynamic workflow started in the background.
+    WorkflowStarted(WorkflowStartedEvent),
+
+    /// A local dynamic workflow emitted a progress snapshot.
+    WorkflowProgress(WorkflowProgressEvent),
+
+    /// A local dynamic workflow reached a terminal state.
+    WorkflowCompleted(WorkflowCompletedEvent),
 
     /// Incremental MCP startup progress updates.
     McpStartupUpdate(McpStartupUpdateEvent),
@@ -5985,6 +5997,7 @@ mod tests {
             output_tokens: 5,
             reasoning_output_tokens: 6,
             total_tokens: 7,
+            codex_rollout_budget_units: None,
         };
         let additional = TokenUsage {
             input_tokens: 10,
@@ -5994,6 +6007,7 @@ mod tests {
             output_tokens: 50,
             reasoning_output_tokens: 60,
             total_tokens: 70,
+            codex_rollout_budget_units: None,
         };
 
         total.add_assign(&additional);
@@ -6008,6 +6022,7 @@ mod tests {
                 output_tokens: 55,
                 reasoning_output_tokens: 66,
                 total_tokens: 77,
+                codex_rollout_budget_units: None,
             }
         );
     }

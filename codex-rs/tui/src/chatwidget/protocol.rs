@@ -54,6 +54,15 @@ impl ChatWidget {
             ServerNotification::ThreadGoalCleared(notification) => {
                 self.on_thread_goal_cleared(notification.thread_id.as_str());
             }
+            ServerNotification::WorkflowStarted(notification) => {
+                self.on_workflow_started(notification);
+            }
+            ServerNotification::WorkflowProgress(notification) => {
+                self.on_workflow_progress(notification);
+            }
+            ServerNotification::WorkflowCompleted(notification) => {
+                self.on_workflow_completed(notification);
+            }
             ServerNotification::ThreadSettingsUpdated(notification) => {
                 self.on_thread_settings_updated(notification);
             }

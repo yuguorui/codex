@@ -37,6 +37,7 @@ pub use session::turn_context::TurnContext;
 pub use user_message_admission::UserMessageAdmission;
 pub use user_message_admission::UserMessageAdmissionError;
 mod agent;
+pub use agent::role::apply_role_to_config as apply_agent_role_to_config;
 mod agent_communication;
 mod attestation;
 mod codex_delegate;

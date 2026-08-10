@@ -633,6 +633,60 @@ async fn load_config_resolves_tool_registry_config() -> std::io::Result<()> {
 }
 
 #[tokio::test]
+async fn load_config_resolves_workflow_child_session_limit() -> std::io::Result<()> {
+    let codex_home = tempdir()?;
+    let configured: ConfigToml = toml::from_str(
+        r#"
+[features.workflows]
+enabled = true
+max_child_sessions = 24
+"#,
+    )
+    .expect("workflow config should deserialize");
+    let config = Config::load_from_base_config_with_overrides(
+        configured,
+        ConfigOverrides::default(),
+        codex_home.abs(),
+    )
+    .await?;
+
+    assert_eq!(config.workflow_max_child_sessions, 24);
+    assert!(config.features.enabled(Feature::Workflows));
+
+    let default = Config::load_from_base_config_with_overrides(
+        ConfigToml::default(),
+        ConfigOverrides::default(),
+        codex_home.abs(),
+    )
+    .await?;
+    assert_eq!(
+        default.workflow_max_child_sessions,
+        DEFAULT_WORKFLOW_MAX_CHILD_SESSIONS
+    );
+
+    let invalid: ConfigToml = toml::from_str(
+        r#"
+[features.workflows]
+max_child_sessions = 65
+"#,
+    )
+    .expect("out-of-range workflow config should deserialize before runtime validation");
+    let error = Config::load_from_base_config_with_overrides(
+        invalid,
+        ConfigOverrides::default(),
+        codex_home.abs(),
+    )
+    .await
+    .expect_err("out-of-range workflow session limit should be rejected");
+    assert!(
+        error
+            .to_string()
+            .contains("features.workflows.max_child_sessions must be between 1 and 64")
+    );
+    Ok(())
+}
+
+#[tokio::test]
 async fn load_config_resolves_token_budget_config() -> std::io::Result<()> {
     for (config_toml, expected) in [
         (

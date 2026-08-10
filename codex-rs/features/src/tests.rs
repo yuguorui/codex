@@ -450,6 +450,33 @@ multi_agent_v2 = true
 }
 
 #[test]
+fn workflow_feature_config_supports_boolean_and_bounded_session_table_forms() {
+    let boolean: FeaturesToml =
+        toml::from_str("workflows = true").expect("boolean workflow feature should deserialize");
+    assert_eq!(boolean.workflows, Some(FeatureToml::Enabled(true)));
+
+    let configured: FeaturesToml = toml::from_str(
+        r#"
+[workflows]
+enabled = true
+max_child_sessions = 24
+"#,
+    )
+    .expect("configured workflow feature should deserialize");
+    assert_eq!(
+        configured.workflows,
+        Some(FeatureToml::Config(crate::WorkflowConfigToml {
+            enabled: Some(true),
+            max_child_sessions: Some(24),
+        }))
+    );
+    assert_eq!(
+        configured.entries(),
+        BTreeMap::from([("workflows".to_string(), true)])
+    );
+}
+
+#[test]
 fn multi_agent_v2_feature_config_deserializes_table() {
     let features: FeaturesToml = toml::from_str(
         r#"
@@ -546,6 +573,7 @@ server_names = ["history", "notes"]
 fn materialize_resolved_enabled_writes_all_features_and_preserves_custom_config() {
     let mut features = Features::with_defaults();
     features.enable(Feature::CodeMode);
+    features.enable(Feature::Workflows);
     features.enable(Feature::MultiAgentV2);
     features.enable(Feature::NetworkProxy);
     features.enable(Feature::NonPrefixedMcpToolNames);
@@ -559,6 +587,10 @@ fn materialize_resolved_enabled_writes_all_features_and_preserves_custom_config(
         code_mode_host: Some(FeatureToml::Config(crate::CodeModeHostConfigToml {
             enabled: Some(false),
             disable_in_process_fallback: Some(true),
+        })),
+        workflows: Some(FeatureToml::Config(crate::WorkflowConfigToml {
+            enabled: Some(false),
+            max_child_sessions: Some(24),
         })),
         multi_agent_v2: Some(FeatureToml::Config(crate::MultiAgentV2ConfigToml {
             enabled: Some(false),
@@ -605,6 +637,13 @@ fn materialize_resolved_enabled_writes_all_features_and_preserves_custom_config(
         Some(FeatureToml::Config(crate::CodeModeHostConfigToml {
             enabled: Some(true),
             disable_in_process_fallback: Some(true),
+        }))
+    );
+    assert_eq!(
+        features_toml.workflows,
+        Some(FeatureToml::Config(crate::WorkflowConfigToml {
+            enabled: Some(true),
+            max_child_sessions: Some(24),
         }))
     );
     assert_eq!(
