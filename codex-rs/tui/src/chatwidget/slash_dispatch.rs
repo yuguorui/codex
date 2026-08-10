@@ -310,6 +310,12 @@ impl ChatWidget {
                     );
                 }
             }
+            SlashCommand::Workflows => {
+                if !self.config.features.enabled(Feature::Workflows) {
+                    return;
+                }
+                self.app_event_tx.send(AppEvent::OpenWorkflows);
+            }
             SlashCommand::Side | SlashCommand::Btw => {
                 self.request_empty_side_conversation(cmd);
             }
@@ -1077,6 +1083,7 @@ impl ChatWidget {
             plugins_command_enabled: self.config.features.enabled(Feature::Plugins),
             token_activity_command_enabled: self.has_codex_backend_auth,
             goal_command_enabled: self.config.features.enabled(Feature::Goals),
+            workflow_command_enabled: self.config.features.enabled(Feature::Workflows),
             service_tier_commands_enabled: self.fast_mode_enabled(),
             personality_command_enabled: self.config.features.enabled(Feature::Personality),
             allow_elevate_sandbox,
@@ -1109,6 +1116,7 @@ impl ChatWidget {
             | SlashCommand::Mcp
             | SlashCommand::Apps
             | SlashCommand::Plugins
+            | SlashCommand::Workflows
             | SlashCommand::Rollout
             | SlashCommand::Copy
             | SlashCommand::Raw

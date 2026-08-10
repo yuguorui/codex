@@ -34,6 +34,7 @@ use feature_configs::RemovedAppsMcpPathOverrideConfigToml;
 pub use feature_configs::RolloutBudgetConfigToml;
 pub use feature_configs::TokenBudgetConfigToml;
 pub use feature_configs::ToolRegistryConfigToml;
+pub use feature_configs::WorkflowConfigToml;
 use legacy::LegacyFeatureToggles;
 pub use legacy::legacy_feature_keys;
 
@@ -96,6 +97,8 @@ pub enum Feature {
     CodexHooks,
     /// Store CLI auth in the encrypted local secrets backend when keyring storage is selected.
     SecretAuthStorage,
+    /// Enable deterministic JavaScript workflows that orchestrate subagents.
+    Workflows,
 
     // Experimental
     /// Record model-attempted tool calls in internal Responses metadata.
@@ -693,6 +696,8 @@ pub struct FeaturesToml {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub code_mode_host: Option<FeatureToml<CodeModeHostConfigToml>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub workflows: Option<FeatureToml<WorkflowConfigToml>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub non_prefixed_mcp_tool_names: Option<FeatureToml<NonPrefixedMcpToolNamesConfigToml>>,
     #[serde(
         default,
@@ -732,6 +737,9 @@ impl FeaturesToml {
         }
         if let Some(enabled) = self.code_mode_host.as_ref().and_then(FeatureToml::enabled) {
             entries.insert(Feature::CodeModeHost.key().to_string(), enabled);
+        }
+        if let Some(enabled) = self.workflows.as_ref().and_then(FeatureToml::enabled) {
+            entries.insert(Feature::Workflows.key().to_string(), enabled);
         }
         if let Some(enabled) = self
             .non_prefixed_mcp_tool_names
@@ -881,6 +889,12 @@ pub const FEATURES: &[FeatureSpec] = &[
         key: "code_mode",
         stage: Stage::UnderDevelopment,
         default_enabled: false,
+    },
+    FeatureSpec {
+        id: Feature::Workflows,
+        key: "workflows",
+        stage: Stage::Stable,
+        default_enabled: true,
     },
     FeatureSpec {
         id: Feature::CodeModeBufferedExec,

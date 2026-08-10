@@ -587,6 +587,33 @@ multi_agent_v2 = true
 }
 
 #[test]
+fn workflow_feature_config_supports_boolean_and_bounded_session_table_forms() {
+    let boolean: FeaturesToml =
+        toml::from_str("workflows = true").expect("boolean workflow feature should deserialize");
+    assert_eq!(boolean.workflows, Some(FeatureToml::Enabled(true)));
+
+    let configured: FeaturesToml = toml::from_str(
+        r#"
+[workflows]
+enabled = true
+max_child_sessions = 24
+"#,
+    )
+    .expect("configured workflow feature should deserialize");
+    assert_eq!(
+        configured.workflows,
+        Some(FeatureToml::Config(crate::WorkflowConfigToml {
+            enabled: Some(true),
+            max_child_sessions: Some(24),
+        }))
+    );
+    assert_eq!(
+        configured.entries(),
+        BTreeMap::from([("workflows".to_string(), true)])
+    );
+}
+
+#[test]
 fn multi_agent_v2_feature_config_deserializes_table() {
     let features: FeaturesToml = toml::from_str(
         r#"

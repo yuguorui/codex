@@ -257,6 +257,7 @@ fn new_config(model: Option<String>, arg0_paths: Arg0DispatchPaths) -> anyhow::R
         agent_default_subagent_reasoning_effort: None,
         agent_interrupt_message_enabled: false,
         agent_max_depth: 1,
+        workflow_max_child_sessions: 24,
         agent_roles: BTreeMap::new(),
         memories: MemoriesConfig::default(),
         sqlite: SqliteConfig::from_sqlite_home(codex_home.clone()),

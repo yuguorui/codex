@@ -167,10 +167,67 @@ pub struct CodexThread {
     pub(crate) session: Arc<Session>,
     pub(crate) io: SessionIo,
     pub(crate) session_source: SessionSource,
+    event_subscribers: EventSubscribers,
     session_configured: SessionConfiguredEvent,
     rollout_path: Option<PathBuf>,
     out_of_band_elicitations: Mutex<OutOfBandElicitations>,
     _diagnostics_guard: GaugeGuard,
+}
+
+#[derive(Clone, Default)]
+struct EventSubscribers {
+    state: Arc<std::sync::Mutex<EventSubscriberState>>,
+}
+
+#[derive(Default)]
+struct EventSubscriberState {
+    senders: Vec<async_channel::Sender<Event>>,
+    closed: bool,
+}
+
+impl EventSubscribers {
+    fn subscribe(&self) -> CodexThreadEventSubscription {
+        let (sender, receiver) = async_channel::unbounded();
+        let mut state = self
+            .state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if !state.closed {
+            state.senders.push(sender);
+        }
+        CodexThreadEventSubscription { receiver }
+    }
+
+    fn forward(&self, event: &Event) {
+        self.state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .senders
+            .retain(|sender| sender.try_send(event.clone()).is_ok());
+    }
+
+    fn close(&self) {
+        let mut state = self
+            .state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        state.closed = true;
+        state.senders.clear();
+    }
+}
+
+/// A passive event stream that does not consume the thread's primary client event queue.
+pub struct CodexThreadEventSubscription {
+    receiver: async_channel::Receiver<Event>,
+}
+
+impl CodexThreadEventSubscription {
+    pub async fn next_event(&self) -> CodexResult<Event> {
+        self.receiver
+            .recv()
+            .await
+            .map_err(|_| CodexErr::InternalAgentDied)
+    }
 }
 
 #[derive(Default)]
@@ -192,15 +249,27 @@ pub struct BackgroundTerminalInfo {
 impl CodexThread {
     pub(crate) fn new(
         session: Arc<Session>,
-        io: SessionIo,
+        mut io: SessionIo,
         session_configured: SessionConfiguredEvent,
         rollout_path: Option<PathBuf>,
         session_source: SessionSource,
     ) -> Self {
+        let event_subscribers = EventSubscribers::default();
+        let event_subscribers_for_task = event_subscribers.clone();
+        let (primary_sender, primary_receiver) = async_channel::unbounded();
+        let source_receiver = std::mem::replace(&mut io.rx_event, primary_receiver);
+        tokio::spawn(async move {
+            while let Ok(event) = source_receiver.recv().await {
+                event_subscribers_for_task.forward(&event);
+                let _ = primary_sender.send(event).await;
+            }
+            event_subscribers_for_task.close();
+        });
         Self {
             session,
             io,
             session_source,
+            event_subscribers,
             session_configured,
             rollout_path,
             out_of_band_elicitations: Mutex::new(OutOfBandElicitations::default()),
@@ -487,6 +556,11 @@ impl CodexThread {
         self.io.next_event().await
     }
 
+    /// Subscribes to future events without competing with the primary app-server/TUI consumer.
+    pub fn subscribe_events(&self) -> CodexThreadEventSubscription {
+        self.event_subscribers.subscribe()
+    }
+
     pub async fn agent_status(&self) -> AgentStatus {
         self.io.agent_status().await
     }
@@ -515,7 +589,7 @@ impl CodexThread {
     }
 
     /// Records a user-role session-prefix message without creating a new user turn boundary.
-    pub(crate) async fn inject_user_message_without_turn(&self, message: String) {
+    pub async fn inject_user_message_without_turn(&self, message: String) {
         let item = ResponseItem::Message {
             id: None,
             role: "user".to_string(),
