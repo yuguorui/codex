@@ -156,6 +156,10 @@ model_reasoning_effort = "minimal"
     .expect("role config should be written");
 
     let mut config = (*turn.config).clone();
+    config
+        .features
+        .enable(Feature::Workflows)
+        .expect("workflows feature can be enabled for test");
     config.agent_roles.insert(
         role_name.clone(),
         AgentRoleConfig {
@@ -1530,7 +1534,7 @@ async fn multi_agent_v2_list_agents_omits_closed_agents() {
     session
         .services
         .agent_control
-        .close_agent(agent_id)
+        .close_agent(session.thread_id, agent_id)
         .await
         .expect("close_agent should succeed");
 
@@ -3194,18 +3198,15 @@ async fn wait_agent_returns_not_found_for_missing_agents() {
 
 #[tokio::test]
 async fn wait_agent_times_out_when_status_is_not_final() {
-    let (mut session, turn) = make_session_and_context().await;
+    let (_session, turn) = make_session_and_context().await;
     let manager = thread_manager();
-    session.services.agent_control = manager.agent_control();
     let config = turn.config.as_ref().clone();
-    let thread = manager
-        .start_thread(StartThreadOptions::new(config.clone()))
-        .await
-        .expect("start thread");
-    let agent_id = thread.thread_id;
+    let (owner, agent) = start_wait_test_agent(&manager, config).await;
+    let agent_id = agent.thread_id;
+    let owner_turn = owner.thread.session.new_default_turn().await;
     let invocation = invocation(
-        Arc::new(session),
-        Arc::new(turn),
+        Arc::clone(&owner.thread.session),
+        owner_turn,
         "wait_agent",
         function_payload(json!({
             "targets": [agent_id.to_string()],
@@ -3228,7 +3229,7 @@ async fn wait_agent_times_out_when_status_is_not_final() {
     );
     assert_eq!(success, None);
 
-    let _ = thread
+    let _ = agent
         .thread
         .submit(Op::Shutdown {})
         .await
@@ -3237,18 +3238,15 @@ async fn wait_agent_times_out_when_status_is_not_final() {
 
 #[tokio::test]
 async fn wait_agent_clamps_short_timeouts_to_minimum() {
-    let (mut session, turn) = make_session_and_context().await;
+    let (_session, turn) = make_session_and_context().await;
     let manager = thread_manager();
-    session.services.agent_control = manager.agent_control();
     let config = turn.config.as_ref().clone();
-    let thread = manager
-        .start_thread(StartThreadOptions::new(config.clone()))
-        .await
-        .expect("start thread");
-    let agent_id = thread.thread_id;
+    let (owner, agent) = start_wait_test_agent(&manager, config).await;
+    let agent_id = agent.thread_id;
+    let owner_turn = owner.thread.session.new_default_turn().await;
     let invocation = invocation(
-        Arc::new(session),
-        Arc::new(turn),
+        Arc::clone(&owner.thread.session),
+        owner_turn,
         "wait_agent",
         function_payload(json!({
             "targets": [agent_id.to_string()],
@@ -3266,7 +3264,7 @@ async fn wait_agent_clamps_short_timeouts_to_minimum() {
         "wait_agent should not return before the minimum timeout clamp"
     );
 
-    let _ = thread
+    let _ = agent
         .thread
         .submit(Op::Shutdown {})
         .await
@@ -3275,22 +3273,21 @@ async fn wait_agent_clamps_short_timeouts_to_minimum() {
 
 #[tokio::test]
 async fn wait_agent_returns_final_status_without_timeout() {
-    let (mut session, turn) = make_session_and_context().await;
+    let (_session, turn) = make_session_and_context().await;
     let manager = thread_manager();
-    session.services.agent_control = manager.agent_control();
     let config = turn.config.as_ref().clone();
-    let thread = manager
-        .start_thread(StartThreadOptions::new(config.clone()))
-        .await
-        .expect("start thread");
-    let agent_id = thread.thread_id;
-    let mut status_rx = manager
-        .agent_control()
+    let (owner, agent) = start_wait_test_agent(&manager, config).await;
+    let agent_id = agent.thread_id;
+    let mut status_rx = owner
+        .thread
+        .session
+        .services
+        .agent_control
         .subscribe_status(agent_id)
         .await
         .expect("subscribe should succeed");
 
-    let _ = thread
+    let _ = agent
         .thread
         .submit(Op::Shutdown {})
         .await
@@ -3299,9 +3296,10 @@ async fn wait_agent_returns_final_status_without_timeout() {
         .await
         .expect("shutdown status should arrive");
 
+    let owner_turn = owner.thread.session.new_default_turn().await;
     let invocation = invocation(
-        Arc::new(session),
-        Arc::new(turn),
+        Arc::clone(&owner.thread.session),
+        owner_turn,
         "wait_agent",
         function_payload(json!({
             "targets": [agent_id.to_string()],
@@ -3323,6 +3321,178 @@ async fn wait_agent_returns_final_status_without_timeout() {
         }
     );
     assert_eq!(success, None);
+}
+
+async fn start_wait_test_agent(
+    manager: &ThreadManager,
+    config: crate::config::Config,
+) -> (crate::NewThread, crate::NewThread) {
+    let owner = manager
+        .start_thread(StartThreadOptions::new(config.clone()))
+        .await
+        .expect("start wait owner");
+    let agent = manager
+        .start_fresh_subagent_without_rollout_budget(
+            owner.thread_id,
+            StartThreadOptions {
+                session_source: Some(SessionSource::SubAgent(SubAgentSource::ThreadSpawn {
+                    parent_thread_id: owner.thread_id,
+                    depth: 1,
+                    agent_path: None,
+                    agent_nickname: Some("wait-target".to_string()),
+                    agent_role: Some("worker".to_string()),
+                })),
+                ..StartThreadOptions::new(config)
+            },
+        )
+        .await
+        .expect("start wait target");
+    (owner, agent)
+}
+
+#[tokio::test]
+async fn wait_agent_repeatedly_reads_owner_scoped_workflow_agent_completion_after_teardown() {
+    let (_session, turn) = make_session_and_context().await;
+    let manager = thread_manager();
+    let config = turn.config.as_ref().clone();
+    let owner = manager
+        .start_thread(StartThreadOptions::new(config.clone()))
+        .await
+        .expect("start workflow owner");
+    let foreign_owner = manager
+        .start_thread(StartThreadOptions::new(config.clone()))
+        .await
+        .expect("start foreign workflow owner");
+    let agent = manager
+        .start_fresh_subagent_without_rollout_budget(
+            owner.thread_id,
+            StartThreadOptions {
+                session_source: Some(SessionSource::SubAgent(SubAgentSource::ThreadSpawn {
+                    parent_thread_id: owner.thread_id,
+                    depth: 1,
+                    agent_path: None,
+                    agent_nickname: Some("workflow-agent".to_string()),
+                    agent_role: Some("worker".to_string()),
+                })),
+                ..StartThreadOptions::new(config.clone())
+            },
+        )
+        .await
+        .expect("start workflow agent");
+    let second_agent = manager
+        .start_fresh_subagent_without_rollout_budget(
+            owner.thread_id,
+            StartThreadOptions {
+                session_source: Some(SessionSource::SubAgent(SubAgentSource::ThreadSpawn {
+                    parent_thread_id: owner.thread_id,
+                    depth: 1,
+                    agent_path: None,
+                    agent_nickname: Some("second-workflow-agent".to_string()),
+                    agent_role: Some("reviewer".to_string()),
+                })),
+                ..StartThreadOptions::new(config)
+            },
+        )
+        .await
+        .expect("start second workflow agent");
+    let agent_turn = agent.thread.session.new_default_turn().await;
+    agent
+        .thread
+        .session
+        .send_event(
+            agent_turn.as_ref(),
+            EventMsg::TurnComplete(TurnCompleteEvent {
+                turn_id: agent_turn.sub_id.clone(),
+                started_at: None,
+                last_agent_message: Some("workflow intermediate result".to_string()),
+                error: None,
+                completed_at: None,
+                duration_ms: None,
+                time_to_first_token_ms: None,
+            }),
+        )
+        .await;
+    let second_agent_turn = second_agent.thread.session.new_default_turn().await;
+    second_agent
+        .thread
+        .session
+        .send_event(
+            second_agent_turn.as_ref(),
+            EventMsg::TurnComplete(TurnCompleteEvent {
+                turn_id: second_agent_turn.sub_id.clone(),
+                started_at: None,
+                last_agent_message: Some("second workflow result".to_string()),
+                error: None,
+                completed_at: None,
+                duration_ms: None,
+                time_to_first_token_ms: None,
+            }),
+        )
+        .await;
+    manager
+        .force_close_subagent(agent.thread_id, Duration::from_secs(5))
+        .await
+        .expect("teardown workflow agent");
+    manager
+        .force_close_subagent(second_agent.thread_id, Duration::from_secs(5))
+        .await
+        .expect("teardown second workflow agent");
+
+    for call_id in 0..2 {
+        let owner_turn = owner.thread.session.new_default_turn().await;
+        let output = WaitAgentHandler::default()
+            .handle(invocation(
+                Arc::clone(&owner.thread.session),
+                owner_turn,
+                "wait_agent",
+                function_payload(json!({
+                    "targets": [agent.thread_id.to_string(), second_agent.thread_id.to_string()],
+                    "timeout_ms": 10_000
+                })),
+            ))
+            .await
+            .unwrap_or_else(|error| panic!("owner wait {call_id} should succeed: {error}"));
+        let (content, success) = expect_text_output(output);
+        assert_eq!(success, None);
+        assert_eq!(
+            serde_json::from_str::<wait::WaitAgentResult>(&content).unwrap(),
+            wait::WaitAgentResult {
+                status: HashMap::from([
+                    (
+                        agent.thread_id.to_string(),
+                        AgentStatus::Completed(Some("workflow intermediate result".to_string())),
+                    ),
+                    (
+                        second_agent.thread_id.to_string(),
+                        AgentStatus::Completed(Some("second workflow result".to_string())),
+                    ),
+                ]),
+                timed_out: false,
+            }
+        );
+    }
+
+    let foreign_turn = foreign_owner.thread.session.new_default_turn().await;
+    let output = WaitAgentHandler::default()
+        .handle(invocation(
+            Arc::clone(&foreign_owner.thread.session),
+            foreign_turn,
+            "wait_agent",
+            function_payload(json!({
+                "targets": [agent.thread_id.to_string()],
+                "timeout_ms": 10_000
+            })),
+        ))
+        .await
+        .expect("foreign wait should return an owner-scoped status");
+    let (content, _) = expect_text_output(output);
+    assert_eq!(
+        serde_json::from_str::<wait::WaitAgentResult>(&content).unwrap(),
+        wait::WaitAgentResult {
+            status: HashMap::from([(agent.thread_id.to_string(), AgentStatus::NotFound)]),
+            timed_out: false,
+        }
+    );
 }
 
 #[tokio::test]
@@ -4093,14 +4263,32 @@ async fn multi_agent_v2_interrupt_agent_rejects_self_target_by_task_name() {
 async fn close_agent_submits_shutdown_and_returns_previous_status() {
     let (mut session, turn) = make_session_and_context().await;
     let manager = thread_manager();
-    session.services.agent_control = manager.agent_control();
     let config = turn.config.as_ref().clone();
-    let thread = manager
+    let owner = manager
         .start_thread(StartThreadOptions::new(config.clone()))
         .await
-        .expect("start thread");
+        .expect("start owner thread");
+    let thread = manager
+        .start_fresh_subagent_without_rollout_budget(
+            owner.thread_id,
+            StartThreadOptions {
+                session_source: Some(SessionSource::SubAgent(SubAgentSource::ThreadSpawn {
+                    parent_thread_id: owner.thread_id,
+                    depth: 1,
+                    agent_path: None,
+                    agent_nickname: Some("workflow-agent".to_string()),
+                    agent_role: Some("worker".to_string()),
+                })),
+                ..StartThreadOptions::new(config)
+            },
+        )
+        .await
+        .expect("start workflow agent");
+    let owner_control = owner.thread.session.services.agent_control.clone();
+    session.services.agent_control = owner_control.clone();
+    session.thread_id = owner.thread_id;
     let agent_id = thread.thread_id;
-    let status_before = manager.agent_control().get_status(agent_id).await;
+    let status_before = owner_control.get_status(agent_id).await;
 
     let invocation = invocation(
         Arc::new(session),
@@ -4124,8 +4312,320 @@ async fn close_agent_submits_shutdown_and_returns_previous_status() {
         .any(|(id, op)| *id == agent_id && matches!(op, Op::Shutdown));
     assert_eq!(submitted_shutdown, true);
 
-    let status_after = manager.agent_control().get_status(agent_id).await;
+    let status_after = owner_control.get_status(agent_id).await;
     assert_eq!(status_after, AgentStatus::NotFound);
+}
+
+#[tokio::test]
+async fn close_agent_is_owner_scoped_across_multiple_workflows() {
+    let (_session, turn) = make_session_and_context().await;
+    let manager = thread_manager();
+    let config = turn.config.as_ref().clone();
+    let first_owner = manager
+        .start_thread(StartThreadOptions::new(config.clone()))
+        .await
+        .expect("start first owner");
+    let second_owner = manager
+        .start_thread(StartThreadOptions::new(config.clone()))
+        .await
+        .expect("start second owner");
+    let first_agent = manager
+        .start_fresh_subagent_without_rollout_budget(
+            first_owner.thread_id,
+            StartThreadOptions {
+                session_source: Some(SessionSource::SubAgent(SubAgentSource::ThreadSpawn {
+                    parent_thread_id: first_owner.thread_id,
+                    depth: 1,
+                    agent_path: None,
+                    agent_nickname: Some("first-workflow-agent".to_string()),
+                    agent_role: None,
+                })),
+                ..StartThreadOptions::new(config.clone())
+            },
+        )
+        .await
+        .expect("start first workflow agent");
+    let first_sibling = manager
+        .start_fresh_subagent_without_rollout_budget(
+            first_owner.thread_id,
+            StartThreadOptions {
+                session_source: Some(SessionSource::SubAgent(SubAgentSource::ThreadSpawn {
+                    parent_thread_id: first_owner.thread_id,
+                    depth: 1,
+                    agent_path: None,
+                    agent_nickname: Some("first-workflow-sibling".to_string()),
+                    agent_role: None,
+                })),
+                ..StartThreadOptions::new(config.clone())
+            },
+        )
+        .await
+        .expect("start sibling workflow agent");
+    let second_agent = manager
+        .start_fresh_subagent_without_rollout_budget(
+            second_owner.thread_id,
+            StartThreadOptions {
+                session_source: Some(SessionSource::SubAgent(SubAgentSource::ThreadSpawn {
+                    parent_thread_id: second_owner.thread_id,
+                    depth: 1,
+                    agent_path: None,
+                    agent_nickname: Some("second-workflow-agent".to_string()),
+                    agent_role: None,
+                })),
+                ..StartThreadOptions::new(config)
+            },
+        )
+        .await
+        .expect("start second owner's workflow agent");
+
+    let cross_owner_error = CloseAgentHandler
+        .handle(invocation(
+            second_owner.thread.session.clone(),
+            second_owner.thread.session.new_default_turn().await,
+            "close_agent",
+            function_payload(json!({"target": first_agent.thread_id.to_string()})),
+        ))
+        .await
+        .err()
+        .expect("another owner must not close the workflow agent");
+    let expected_foreign_error = FunctionCallError::RespondToModel(format!(
+        "agent with id {} not found",
+        first_agent.thread_id
+    ));
+    assert_eq!(cross_owner_error, expected_foreign_error);
+    let cross_owner_resume_error = ResumeAgentHandler
+        .handle(invocation(
+            second_owner.thread.session.clone(),
+            second_owner.thread.session.new_default_turn().await,
+            "resume_agent",
+            function_payload(json!({"id": first_agent.thread_id.to_string()})),
+        ))
+        .await
+        .err()
+        .expect("another owner must not resume the workflow agent");
+    assert_eq!(cross_owner_resume_error, expected_foreign_error);
+    let cross_owner_send_error = SendInputHandler
+        .handle(invocation(
+            second_owner.thread.session.clone(),
+            second_owner.thread.session.new_default_turn().await,
+            "send_input",
+            function_payload(json!({
+                "target": first_agent.thread_id.to_string(),
+                "message": "foreign input"
+            })),
+        ))
+        .await
+        .err()
+        .expect("another owner must not send input to the workflow agent");
+    assert_eq!(cross_owner_send_error, expected_foreign_error);
+    assert_ne!(
+        first_owner
+            .thread
+            .session
+            .services
+            .agent_control
+            .get_status(first_agent.thread_id)
+            .await,
+        AgentStatus::NotFound
+    );
+
+    ResumeAgentHandler
+        .handle(invocation(
+            first_owner.thread.session.clone(),
+            first_owner.thread.session.new_default_turn().await,
+            "resume_agent",
+            function_payload(json!({"id": first_agent.thread_id.to_string()})),
+        ))
+        .await
+        .expect("the owning thread should resume its workflow agent");
+    SendInputHandler
+        .handle(invocation(
+            first_owner.thread.session.clone(),
+            first_owner.thread.session.new_default_turn().await,
+            "send_input",
+            function_payload(json!({
+                "target": first_agent.thread_id.to_string(),
+                "message": "same-owner input"
+            })),
+        ))
+        .await
+        .expect("the owning thread should send input to its workflow agent");
+    wait_for_recorded_user_input(
+        &first_agent.thread,
+        &[UserInput::Text {
+            text: "same-owner input".to_string(),
+            text_elements: Vec::new(),
+        }],
+    )
+    .await;
+
+    CloseAgentHandler
+        .handle(invocation(
+            first_owner.thread.session.clone(),
+            first_owner.thread.session.new_default_turn().await,
+            "close_agent",
+            function_payload(json!({"target": first_agent.thread_id.to_string()})),
+        ))
+        .await
+        .expect("the owning thread should close its workflow agent by id");
+    assert_eq!(
+        first_owner
+            .thread
+            .session
+            .services
+            .agent_control
+            .get_status(first_agent.thread_id)
+            .await,
+        AgentStatus::NotFound
+    );
+    assert_ne!(
+        first_owner
+            .thread
+            .session
+            .services
+            .agent_control
+            .get_status(first_sibling.thread_id)
+            .await,
+        AgentStatus::NotFound
+    );
+    assert_ne!(
+        second_owner
+            .thread
+            .session
+            .services
+            .agent_control
+            .get_status(second_agent.thread_id)
+            .await,
+        AgentStatus::NotFound
+    );
+
+    let report = manager
+        .shutdown_all_threads_bounded(Duration::from_secs(10))
+        .await;
+    assert!(report.timed_out.is_empty());
+}
+
+#[tokio::test]
+async fn close_agent_is_idempotent_after_registered_fresh_subagent_teardown() {
+    let (_session, turn) = make_session_and_context().await;
+    let manager = thread_manager();
+    let config = turn.config.as_ref().clone();
+    let owner = manager
+        .start_thread(StartThreadOptions::new(config.clone()))
+        .await
+        .expect("start owner thread");
+    let owner_session = owner.thread.session.clone();
+    let agent = manager
+        .start_fresh_subagent_without_rollout_budget(
+            owner.thread_id,
+            StartThreadOptions {
+                session_source: Some(SessionSource::SubAgent(SubAgentSource::ThreadSpawn {
+                    parent_thread_id: owner.thread_id,
+                    depth: 1,
+                    agent_path: None,
+                    agent_nickname: Some("workflow-agent".to_string()),
+                    agent_role: Some("explorer".to_string()),
+                })),
+                ..StartThreadOptions::new(config)
+            },
+        )
+        .await
+        .expect("start registered fresh subagent");
+    assert_eq!(
+        manager
+            .force_close_subagent(agent.thread_id, Duration::from_secs(5))
+            .await
+            .expect("workflow teardown should use ordinary close cleanup"),
+        crate::codex_thread::ThreadTeardownStatus::Confirmed
+    );
+
+    let mut first_close = invocation(
+        owner_session.clone(),
+        owner_session.new_default_turn().await,
+        "close_agent",
+        function_payload(json!({"target": agent.thread_id.to_string()})),
+    );
+    first_close.call_id = "close-1".to_string();
+    let first_output = CloseAgentHandler
+        .handle(first_close)
+        .await
+        .expect("first close should clean up the torn-down workflow agent");
+    let mut second_close = invocation(
+        owner_session.clone(),
+        owner_session.new_default_turn().await,
+        "close_agent",
+        function_payload(json!({"target": agent.thread_id.to_string()})),
+    );
+    second_close.call_id = "close-2".to_string();
+    let second_output = CloseAgentHandler
+        .handle(second_close)
+        .await
+        .expect("second close should be idempotent");
+    let (first_content, first_success) = expect_text_output(first_output);
+    let (second_content, second_success) = expect_text_output(second_output);
+    let first_result: close_agent::CloseAgentResult =
+        serde_json::from_str(&first_content).expect("first close result should be json");
+    let second_result: close_agent::CloseAgentResult =
+        serde_json::from_str(&second_content).expect("second close result should be json");
+
+    assert_eq!(first_result.previous_status, AgentStatus::NotFound);
+    assert_eq!(second_result.previous_status, AgentStatus::NotFound);
+    assert_eq!((first_success, second_success), (Some(true), Some(true)));
+
+    let second_close_status = timeout(Duration::from_secs(5), async {
+        loop {
+            let event = owner
+                .thread
+                .next_event()
+                .await
+                .expect("owner event stream should stay open");
+            if let EventMsg::ItemCompleted(ItemCompletedEvent {
+                item: TurnItem::CollabAgentToolCall(item),
+                ..
+            }) = event.msg
+                && item.id == "close-2"
+            {
+                return item.status;
+            }
+        }
+    })
+    .await
+    .expect("second close should emit a completed tool item");
+    assert_eq!(second_close_status, CollabAgentToolCallStatus::Completed);
+
+    ResumeAgentHandler
+        .handle(invocation(
+            owner_session.clone(),
+            owner_session.new_default_turn().await,
+            "resume_agent",
+            function_payload(json!({"id": agent.thread_id.to_string()})),
+        ))
+        .await
+        .expect("resume_agent should restart a workflow agent after teardown");
+    let resumed = manager
+        .get_thread(agent.thread_id)
+        .await
+        .expect("resumed workflow agent should be loaded");
+    SendInputHandler
+        .handle(invocation(
+            owner_session,
+            owner.thread.session.new_default_turn().await,
+            "send_input",
+            function_payload(json!({
+                "target": agent.thread_id.to_string(),
+                "message": "follow up after workflow teardown"
+            })),
+        ))
+        .await
+        .expect("send_input should work after resuming a workflow agent");
+    wait_for_recorded_user_input(
+        &resumed,
+        &[UserInput::Text {
+            text: "follow up after workflow teardown".to_string(),
+            text_elements: Vec::new(),
+        }],
+    )
+    .await;
 }
 
 #[tokio::test]
@@ -4445,6 +4945,10 @@ async fn build_agent_spawn_config_uses_turn_context_values() {
     let config = build_agent_spawn_config(&base_instructions, &turn).expect("spawn config");
     let mut expected = (*turn.config).clone();
     expected.base_instructions_provenance = base_instructions.provenance.clone();
+    expected
+        .features
+        .disable(Feature::Workflows)
+        .expect("workflows feature can be disabled for test");
     expected.base_instructions = Some(base_instructions.text);
     expected.model = Some(turn.model_info().slug.clone());
     expected.model_provider = turn.provider.info().clone();
