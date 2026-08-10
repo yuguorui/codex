@@ -63,12 +63,14 @@ impl CellActor {
         let (event_tx, event_rx) = mpsc::unbounded_channel();
         let (command_tx, command_rx) = mpsc::unbounded_channel();
         let (initial_response_tx, initial_response_rx) = oneshot::channel();
+        let string_code_generation = request.string_code_generation;
         let (runtime_tx, runtime_control_tx, runtime_terminate_handle) = spawn_runtime(
             stored_values,
             runtime_request(request),
             event_tx,
             PendingRuntimeMode::PauseUntilResumed,
             task_failure_handler.clone(),
+            string_code_generation,
         )?;
         let handle = CellHandle::new(command_tx, Arc::clone(&cell_state));
         let task = run_cell(
