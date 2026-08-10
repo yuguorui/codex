@@ -1007,6 +1007,7 @@ impl App {
             self.schedule_immediate_resize_reflow(tui);
             self.maybe_run_resize_reflow(tui, screen_size)?;
         }
+        self.chat_widget.note_screen_height(screen_size.height);
         self.with_chat_widget_frame(screen_size.width, |desired_height, chat_widget| {
             let desired_height = if dashboard_visible {
                 screen_size.height

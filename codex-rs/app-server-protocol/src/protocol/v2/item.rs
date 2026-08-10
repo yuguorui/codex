@@ -20,6 +20,9 @@ pub use codex_extension_items::image_generation::ImageGenerationItem;
 pub use codex_extension_items::sleep::SleepItem;
 pub use codex_extension_items::web_search::WebSearchAction;
 pub use codex_extension_items::web_search::WebSearchItem;
+pub use codex_extension_items::workflow::WorkflowInputAnalysisItem;
+pub use codex_extension_items::workflow::WorkflowResultReadItem;
+pub use codex_extension_items::workflow::WorkflowResultReadStatus;
 use codex_protocol::approvals::ExecApprovalKind as CoreExecApprovalKind;
 use codex_protocol::approvals::GuardianAssessmentAction as CoreGuardianAssessmentAction;
 use codex_protocol::approvals::GuardianAssessmentDecisionSource as CoreGuardianAssessmentDecisionSource;
@@ -396,6 +399,8 @@ pub enum ThreadItem {
         path: LegacyAppPathString,
     },
     Sleep(SleepItem),
+    WorkflowInputAnalysis(WorkflowInputAnalysisItem),
+    WorkflowResultRead(WorkflowResultReadItem),
     ImageGeneration(ImageGenerationItem),
     #[serde(rename_all = "camelCase")]
     #[ts(rename_all = "camelCase")]
@@ -456,6 +461,8 @@ impl ThreadItem {
             | ThreadItem::ContextCompaction { id, .. } => id,
             ThreadItem::WebSearch(item) => &item.id,
             ThreadItem::Sleep(item) => &item.id,
+            ThreadItem::WorkflowInputAnalysis(item) => &item.id,
+            ThreadItem::WorkflowResultRead(item) => &item.id,
             ThreadItem::ImageGeneration(item) => &item.id,
         }
     }
@@ -983,6 +990,10 @@ impl From<CoreTurnItem> for ThreadItem {
                 ExtensionItem::ImageGeneration(item) => ThreadItem::ImageGeneration(item),
                 ExtensionItem::Sleep(item) => ThreadItem::Sleep(item),
                 ExtensionItem::WebSearch(item) => ThreadItem::WebSearch(item),
+                ExtensionItem::WorkflowInputAnalysis(item) => {
+                    ThreadItem::WorkflowInputAnalysis(item)
+                }
+                ExtensionItem::WorkflowResultRead(item) => ThreadItem::WorkflowResultRead(item),
             },
             CoreTurnItem::ImageGeneration(image) => {
                 ThreadItem::ImageGeneration(ImageGenerationItem {

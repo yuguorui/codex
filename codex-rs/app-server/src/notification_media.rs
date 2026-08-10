@@ -133,7 +133,10 @@ pub(crate) fn without_notification_media(notification: ServerNotification) -> Se
         | ServerNotification::ThreadRealtimeClosed(_)
         | ServerNotification::WindowsWorldWritableWarning(_)
         | ServerNotification::WindowsSandboxSetupCompleted(_)
-        | ServerNotification::AccountLoginCompleted(_) => notification,
+        | ServerNotification::AccountLoginCompleted(_)
+        | ServerNotification::WorkflowStarted(_)
+        | ServerNotification::WorkflowProgress(_)
+        | ServerNotification::WorkflowCompleted(_) => notification,
     }
 }
 
@@ -209,7 +212,9 @@ fn without_thread_item_media(mut item: ThreadItem) -> ThreadItem {
         | ThreadItem::Sleep(_)
         | ThreadItem::EnteredReviewMode { .. }
         | ThreadItem::ExitedReviewMode { .. }
-        | ThreadItem::ContextCompaction { .. } => {}
+        | ThreadItem::ContextCompaction { .. }
+        | ThreadItem::WorkflowInputAnalysis(_)
+        | ThreadItem::WorkflowResultRead(_) => {}
     }
     item
 }

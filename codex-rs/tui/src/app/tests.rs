@@ -2507,7 +2507,7 @@ fn attach_live_thread_for_selection_rejects_unmaterialized_fallback_threads() ->
 }
 
 #[tokio::test]
-async fn should_attach_live_thread_for_selection_skips_closed_metadata_only_threads() {
+async fn should_attach_live_thread_for_selection_hydrates_closed_metadata_only_threads() {
     let mut app = make_test_app().await;
     let thread_id = ThreadId::new();
     app.agent_navigation.upsert(
@@ -2517,7 +2517,7 @@ async fn should_attach_live_thread_for_selection_skips_closed_metadata_only_thre
         /*is_closed*/ true,
     );
 
-    assert!(!app.should_attach_live_thread_for_selection(thread_id));
+    assert!(app.should_attach_live_thread_for_selection(thread_id));
 
     app.agent_navigation.upsert(
         thread_id,

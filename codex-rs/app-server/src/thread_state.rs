@@ -20,8 +20,10 @@ use codex_protocol::protocol::EventMsg;
 use codex_rollout::RolloutItem;
 use codex_rollout::state_db::StateDbHandle;
 use codex_utils_path_uri::LegacyAppPathString;
+use std::collections::BTreeSet;
 use std::collections::HashMap;
 use std::collections::HashSet;
+use std::ops::Bound;
 use std::sync::Arc;
 use std::sync::Mutex as StdMutex;
 use std::sync::Weak;
@@ -293,7 +295,7 @@ mod tests {
 
 struct ThreadEntry {
     state: Arc<Mutex<ThreadState>>,
-    connection_ids: HashSet<ConnectionId>,
+    connection_ids: BTreeSet<ConnectionId>,
     has_connections_watcher: watch::Sender<bool>,
 }
 
@@ -301,7 +303,7 @@ impl Default for ThreadEntry {
     fn default() -> Self {
         Self {
             state: Arc::new(Mutex::new(ThreadState::default())),
-            connection_ids: HashSet::new(),
+            connection_ids: BTreeSet::new(),
             has_connections_watcher: watch::channel(false).0,
         }
     }
@@ -327,6 +329,11 @@ struct ThreadStateManagerInner {
 #[derive(Clone, Copy, Default)]
 pub(crate) struct ConnectionCapabilities {
     pub(crate) request_attestation: bool,
+}
+
+pub(crate) struct SubscribedConnectionPage {
+    pub(crate) connection_ids: Vec<ConnectionId>,
+    pub(crate) next_after: Option<ConnectionId>,
 }
 
 #[derive(Clone, Default)]
@@ -392,6 +399,29 @@ impl ThreadStateManager {
         }
     }
 
+    pub(crate) async fn wait_for_new_thread_subscriber(&self, thread_id: ThreadId) {
+        let mut has_connections = {
+            let mut state = self.state.lock().await;
+            state
+                .threads
+                .entry(thread_id)
+                .or_default()
+                .has_connections_watcher
+                .subscribe()
+        };
+        let mut observed_without_connections = !*has_connections.borrow_and_update();
+        loop {
+            if has_connections.changed().await.is_err() {
+                return;
+            }
+            if !*has_connections.borrow_and_update() {
+                observed_without_connections = true;
+            } else if observed_without_connections {
+                return;
+            }
+        }
+    }
+
     pub(crate) async fn subscribed_connection_ids(&self, thread_id: ThreadId) -> Vec<ConnectionId> {
         let state = self.state.lock().await;
         state
@@ -399,6 +429,53 @@ impl ThreadStateManager {
             .get(&thread_id)
             .map(|thread_entry| thread_entry.connection_ids.iter().copied().collect())
             .unwrap_or_default()
+    }
+
+    pub(crate) async fn subscribed_connection_page(
+        &self,
+        thread_id: ThreadId,
+        after: Option<ConnectionId>,
+        limit: usize,
+    ) -> SubscribedConnectionPage {
+        let state = self.state.lock().await;
+        let Some(thread_entry) = state.threads.get(&thread_id) else {
+            return SubscribedConnectionPage {
+                connection_ids: Vec::new(),
+                next_after: None,
+            };
+        };
+        let lower_bound = after.map_or(Bound::Unbounded, Bound::Excluded);
+        let mut connection_ids = thread_entry
+            .connection_ids
+            .range((lower_bound, Bound::Unbounded))
+            .take(limit.saturating_add(1))
+            .copied()
+            .collect::<Vec<_>>();
+        let has_more = connection_ids.len() > limit;
+        if has_more {
+            connection_ids.pop();
+        }
+        let next_after = has_more.then(|| connection_ids.last().copied()).flatten();
+        SubscribedConnectionPage {
+            connection_ids,
+            next_after,
+        }
+    }
+
+    pub(crate) async fn retain_subscribed_connections(
+        &self,
+        thread_id: ThreadId,
+        connection_ids: &[ConnectionId],
+    ) -> Vec<ConnectionId> {
+        let state = self.state.lock().await;
+        let Some(thread_entry) = state.threads.get(&thread_id) else {
+            return Vec::new();
+        };
+        connection_ids
+            .iter()
+            .copied()
+            .filter(|connection_id| thread_entry.connection_ids.contains(connection_id))
+            .collect()
     }
 
     pub(crate) async fn thread_state(&self, thread_id: ThreadId) -> Arc<Mutex<ThreadState>> {
