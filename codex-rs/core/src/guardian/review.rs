@@ -433,6 +433,10 @@ async fn run_guardian_review(
 
     let schema = guardian_output_schema();
     let terminal_action = action_summary.clone();
+    let approval_artifact = match &request {
+        GuardianApprovalRequest::ExtensionTool { artifact, .. } => Some(artifact.clone()),
+        _ => None,
+    };
     let (outcome, analytics_result) = Box::pin(run_guardian_review_session_with_retry(
         session.clone(),
         context,
@@ -446,7 +450,17 @@ async fn run_guardian_review(
 
     let completed_at_ms = now_unix_timestamp_ms();
     let (assessment, count_denial_for_circuit_breaker) = match outcome {
-        GuardianReviewOutcome::Completed(assessment) => {
+        GuardianReviewOutcome::Completed(mut assessment) => {
+            if assessment.outcome == GuardianAssessmentOutcome::Allow
+                && approval_artifact
+                    .as_ref()
+                    .is_some_and(|artifact| !artifact.is_complete())
+            {
+                assessment.outcome = GuardianAssessmentOutcome::Deny;
+                assessment.rationale =
+                    "Automatic approval review did not read the complete bound approval artifact."
+                        .to_string();
+            }
             let approved = matches!(assessment.outcome, GuardianAssessmentOutcome::Allow);
             track_guardian_review(
                 session.as_ref(),

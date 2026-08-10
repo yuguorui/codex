@@ -211,4 +211,30 @@ mod tests {
                 .is_ok()
         );
     }
+
+    #[test]
+    fn workflow_skill_keeps_runtime_values_structured_and_owning_control_explicit() {
+        let skill = SYSTEM_SKILLS_DIR
+            .get_file("workflow/SKILL.md")
+            .expect("embedded Workflow skill")
+            .contents_utf8()
+            .expect("UTF-8 Workflow skill");
+        let api = SYSTEM_SKILLS_DIR
+            .get_file("workflow/references/api.md")
+            .expect("embedded Workflow API reference")
+            .contents_utf8()
+            .expect("UTF-8 Workflow API reference");
+
+        assert!(skill.contains("Pass variable data through named `inputs`"));
+        assert!(skill.contains("preserve steered input"));
+        assert!(api.contains("The model prompt carries task"));
+        assert!(api.contains("Owning-model orchestration tools remain with the owning agent"));
+        for text in [skill, api] {
+            assert!(!text.contains("prompt byte limit"));
+            assert!(!text.contains("output byte limit"));
+            assert!(!text.contains("node limit"));
+            assert!(!text.contains("token limit"));
+            assert!(!text.contains("only inline `script`"));
+        }
+    }
 }

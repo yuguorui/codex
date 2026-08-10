@@ -1,0 +1,28 @@
+---
+source: tui/src/chatwidget/workflows_tests.rs
+expression: "render_view_with_size(agent_detail_params_for(WorkflowStatus::Running, 1), 52,\n32,)"
+---
+
+  finder
+  running · analyzing inputs · Phase 2: Verify · a
+
+› 1. ↗ Open transcript
+       Agent conversation
+  2. ↻ Retry attempt
+       Cancel this attempt and start another
+  3. − Skip agent
+       Cancel this agent and return null
+     Runtime
+     gpt-5 · fallback gpt-4.1 · worktree isolation
+     · attempt 2
+     Usage
+     1.2K tokens · 2 tools · 1.00s
+     Timing
+     queued 2024-08-30 06:40:10 UTC · started
+     2024-08-30 06:40:11 UTC · updated 2024-08-30
+     06:40:15 UTC
+     Prompt
+     Inspect subsystem 1 and report concrete
+     findings with file references.
+     Result
+     Waiting for completion

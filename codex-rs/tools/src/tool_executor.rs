@@ -4,6 +4,7 @@ use crate::ToolOutput;
 use crate::ToolSearchInfo;
 use crate::ToolSpec;
 use codex_protocol::config_types::ToolExposureSurface;
+use codex_protocol::protocol::SessionSource;
 use std::future::Future;
 use std::pin::Pin;
 
@@ -98,6 +99,26 @@ impl ToolExposure {
     }
 }
 
+/// Controls which session owners may register and dispatch a tool.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub enum ToolAvailability {
+    /// Allow the tool in every session.
+    #[default]
+    AnySession,
+
+    /// Allow the tool only in sessions owned by a root model.
+    RootSessionOnly,
+}
+
+impl ToolAvailability {
+    pub fn is_available(self, session_source: &SessionSource) -> bool {
+        match self {
+            Self::AnySession => true,
+            Self::RootSessionOnly => !session_source.is_non_root_agent(),
+        }
+    }
+}
+
 /// Shared runtime contract for model-visible tools.
 ///
 /// Implementations keep the model-visible spec tied to the executable runtime.
@@ -112,6 +133,11 @@ pub trait ToolExecutor<Invocation>: Send + Sync {
     /// The preferred exposure before the host applies step-specific policy.
     fn exposure(&self) -> ToolExposure {
         ToolExposure::Direct
+    }
+
+    /// The sessions in which the host may register and dispatch this tool.
+    fn availability(&self) -> ToolAvailability {
+        ToolAvailability::AnySession
     }
 
     fn search_info(&self) -> Option<ToolSearchInfo> {

@@ -111,7 +111,42 @@ fn server_notification_requires_delivery(notification: &ServerNotification) -> b
             | ServerNotification::ThreadQueueChanged(_)
             | ServerNotification::ThreadSettingsUpdated(_)
             | ServerNotification::ExternalAgentConfigImportCompleted(_)
+            | ServerNotification::WorkflowStarted(_)
+            | ServerNotification::WorkflowProgress(_)
+            | ServerNotification::WorkflowCompleted(_)
     )
+}
+
+async fn deliver_in_process_server_notification(
+    event_tx: &mpsc::Sender<InProcessServerEvent>,
+    notification: ServerNotification,
+    write_complete_tx: Option<oneshot::Sender<crate::outgoing_message::OutgoingWriteResult>>,
+) -> bool {
+    if server_notification_requires_delivery(&notification) {
+        if event_tx
+            .send(InProcessServerEvent::ServerNotification(Box::new(
+                notification,
+            )))
+            .await
+            .is_err()
+        {
+            return false;
+        }
+    } else if let Err(send_error) = event_tx.try_send(InProcessServerEvent::ServerNotification(
+        Box::new(notification),
+    )) {
+        return match send_error {
+            mpsc::error::TrySendError::Full(_) => {
+                warn!("dropping in-process server notification (queue full)");
+                true
+            }
+            mpsc::error::TrySendError::Closed(_) => false,
+        };
+    }
+    if let Some(write_complete_tx) = write_complete_tx {
+        let _ = write_complete_tx.send(crate::outgoing_message::OutgoingWriteResult::Written);
+    }
+    true
 }
 
 /// Input needed to start an in-process app-server runtime.
@@ -637,7 +672,7 @@ async fn start_uninitialized(args: InProcessStartArgs) -> IoResult<InProcessClie
                     }
                 }
                 queued_message = writer_rx.recv() => {
-                    let Some(queued_message) = queued_message else {
+                    let Some(mut queued_message) = queued_message else {
                         break;
                     };
                     let outgoing_message = queued_message.message;
@@ -698,35 +733,20 @@ async fn start_uninitialized(args: InProcessStartArgs) -> IoResult<InProcessClie
                             }
                         }
                         OutgoingMessage::AppServerNotification(envelope) => {
-                            let notification = envelope.notification;
-                            if server_notification_requires_delivery(&notification) {
-                                if event_tx
-                                    .send(InProcessServerEvent::ServerNotification(Box::new(
-                                        notification,
-                                    )))
-                                    .await
-                                    .is_err()
-                                {
-                                    break;
-                                }
-                            } else if let Err(send_error) =
-                                event_tx.try_send(InProcessServerEvent::ServerNotification(
-                                    Box::new(notification),
-                                ))
+                            if !deliver_in_process_server_notification(
+                                &event_tx,
+                                envelope.notification,
+                                queued_message.write_complete_tx.take(),
+                            )
+                            .await
                             {
-                                match send_error {
-                                    mpsc::error::TrySendError::Full(_) => {
-                                        warn!("dropping in-process server notification (queue full)");
-                                    }
-                                    mpsc::error::TrySendError::Closed(_) => {
-                                        break;
-                                    }
-                                }
+                                break;
                             }
                         }
                     }
                     if let Some(write_complete_tx) = queued_message.write_complete_tx {
-                        let _ = write_complete_tx.send(());
+                        let _ = write_complete_tx
+                            .send(crate::outgoing_message::OutgoingWriteResult::Written);
                     }
                 }
             }
@@ -979,6 +999,48 @@ mod tests {
             .await
             .expect("in-process runtime should shutdown cleanly");
         assert!(completed.load(Ordering::Acquire));
+    }
+
+    #[tokio::test]
+    async fn tracked_write_acknowledges_at_in_process_delivery_boundary() {
+        let (event_tx, mut event_rx) = mpsc::channel(1);
+        event_tx
+            .send(InProcessServerEvent::Lagged { skipped: 1 })
+            .await
+            .expect("event queue should accept blocker");
+        let (write_complete_tx, mut write_complete_rx) = oneshot::channel();
+        let delivery = tokio::spawn(async move {
+            deliver_in_process_server_notification(
+                &event_tx,
+                ServerNotification::ThreadQueueChanged(ThreadQueueChangedNotification {
+                    thread_id: "thread-1".to_string(),
+                }),
+                Some(write_complete_tx),
+            )
+            .await
+        });
+
+        tokio::task::yield_now().await;
+        assert!(matches!(
+            write_complete_rx.try_recv(),
+            Err(oneshot::error::TryRecvError::Empty)
+        ));
+        assert!(matches!(
+            event_rx.recv().await,
+            Some(InProcessServerEvent::Lagged { skipped: 1 })
+        ));
+        assert!(matches!(
+            event_rx.recv().await,
+            Some(InProcessServerEvent::ServerNotification(notification))
+                if matches!(*notification, ServerNotification::ThreadQueueChanged(_))
+        ));
+        assert_eq!(
+            write_complete_rx
+                .await
+                .expect("delivered event should acknowledge write"),
+            crate::outgoing_message::OutgoingWriteResult::Written
+        );
+        assert!(delivery.await.expect("delivery task should finish"));
     }
 
     #[test]
