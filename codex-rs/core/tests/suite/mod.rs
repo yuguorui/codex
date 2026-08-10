@@ -67,6 +67,7 @@ mod cyber_exec_policy;
 mod deprecation_notice;
 mod exec;
 mod exec_policy;
+mod extension_approval;
 #[cfg(not(target_os = "windows"))]
 mod extension_sandbox;
 mod external_auth;

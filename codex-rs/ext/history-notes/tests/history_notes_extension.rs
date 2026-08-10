@@ -240,6 +240,7 @@ fn tool_call(tool_name: ToolName, arguments: serde_json::Value) -> ToolCall {
         conversation_history: ConversationHistory::default(),
         turn_item_emitter: Arc::new(NoopTurnItemEmitter),
         environments: Vec::new(),
+        agent_configuration: None,
         payload: ToolPayload::Function {
             arguments: arguments.to_string(),
         },
