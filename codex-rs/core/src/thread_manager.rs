@@ -1,6 +1,7 @@
 use crate::CodexAppsToolsCache;
 use crate::SkillsService;
 use crate::agent::AgentControl;
+use crate::agent::RolloutBudgetEnforcement;
 use crate::attestation::AttestationProvider;
 use crate::codex_thread::CodexThread;
 use crate::config::Config;
@@ -758,6 +759,75 @@ impl ThreadManager {
         options: StartThreadOptions,
         forked_from_thread_id: Option<ThreadId>,
     ) -> CodexResult<NewThread> {
+        let agent_control = self.agent_control_for_config(&options.config);
+        self.start_thread_inner_with_agent_control(options, forked_from_thread_id, agent_control)
+            .await
+    }
+
+    /// Starts a fresh-context subagent while sharing only the parent's rollout budget.
+    pub async fn start_fresh_subagent(
+        &self,
+        parent_thread_id: ThreadId,
+        options: StartThreadOptions,
+    ) -> CodexResult<NewThread> {
+        self.start_fresh_subagent_with_rollout_budget_enforcement(
+            parent_thread_id,
+            options,
+            RolloutBudgetEnforcement::Enforce,
+        )
+        .await
+    }
+
+    /// Starts a fresh-context subagent that contributes to the parent's rollout budget without
+    /// discarding a result that crosses the limit while the request is already in flight.
+    pub async fn start_fresh_subagent_observing_rollout_budget(
+        &self,
+        parent_thread_id: ThreadId,
+        options: StartThreadOptions,
+    ) -> CodexResult<NewThread> {
+        self.start_fresh_subagent_with_rollout_budget_enforcement(
+            parent_thread_id,
+            options,
+            RolloutBudgetEnforcement::Observe,
+        )
+        .await
+    }
+
+    async fn start_fresh_subagent_with_rollout_budget_enforcement(
+        &self,
+        parent_thread_id: ThreadId,
+        options: StartThreadOptions,
+        rollout_budget_enforcement: RolloutBudgetEnforcement,
+    ) -> CodexResult<NewThread> {
+        let parent = self.get_thread(parent_thread_id).await?;
+        let parent_control = &parent.session.services.agent_control;
+        let agent_control = if parent_control.rollout_budget().token_snapshot().is_some() {
+            AgentControl::new_with_shared_rollout_budget(
+                Arc::downgrade(&self.state),
+                parent_control,
+                rollout_budget_enforcement,
+            )
+        } else {
+            AgentControl::new_with_rollout_budget_enforcement(
+                Arc::downgrade(&self.state),
+                options.config.rollout_budget.clone(),
+                rollout_budget_enforcement,
+            )
+        };
+        self.start_thread_inner_with_agent_control(
+            options,
+            /*forked_from_thread_id*/ None,
+            agent_control,
+        )
+        .await
+    }
+
+    async fn start_thread_inner_with_agent_control(
+        &self,
+        options: StartThreadOptions,
+        forked_from_thread_id: Option<ThreadId>,
+        agent_control: AgentControl,
+    ) -> CodexResult<NewThread> {
         let environments = options.environments.unwrap_or_else(|| {
             default_thread_environment_selections(
                 self.state.environment_manager.as_ref(),
@@ -765,7 +835,6 @@ impl ThreadManager {
                 &options.config.workspace_roots,
             )
         });
-        let agent_control = self.agent_control_for_config(&options.config);
         let (resumed_session_source, resumed_thread_source) = options
             .initial_history
             .get_resumed_session_sources()

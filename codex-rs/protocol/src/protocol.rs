@@ -56,6 +56,9 @@ use crate::request_permissions::RequestPermissionsEvent;
 use crate::request_permissions::RequestPermissionsResponse;
 use crate::request_user_input::RequestUserInputResponse;
 use crate::user_input::UserInput;
+use crate::workflow::WorkflowCompletedEvent;
+use crate::workflow::WorkflowProgressEvent;
+use crate::workflow::WorkflowStartedEvent;
 use codex_utils_absolute_path::AbsolutePathBuf;
 use codex_utils_path_uri::PathUri;
 use schemars::JsonSchema;
@@ -1361,6 +1364,15 @@ pub enum EventMsg {
 
     /// Updated long-running goal metadata for the thread.
     ThreadGoalUpdated(ThreadGoalUpdatedEvent),
+
+    /// A local dynamic workflow started in the background.
+    WorkflowStarted(WorkflowStartedEvent),
+
+    /// A local dynamic workflow emitted a progress snapshot.
+    WorkflowProgress(WorkflowProgressEvent),
+
+    /// A local dynamic workflow reached a terminal state.
+    WorkflowCompleted(WorkflowCompletedEvent),
 
     /// Incremental MCP startup progress updates.
     McpStartupUpdate(McpStartupUpdateEvent),

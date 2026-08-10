@@ -1,0 +1,11 @@
+---
+source: tui/src/chatwidget/workflows_tests.rs
+expression: buffer_text(&buffer)
+---
+
+  Workflows
+  Live and completed runs for this thread
+
+› 1. • Review changes  running · 7 agents · 12.5K tokens · wf_review
+  2. ✓ Deep research   completed · 7 agents · 12.5K tokens · wf_completed
+  3. ✗ Release audit   failed · 7 agents · 12.5K tokens · wf_failed

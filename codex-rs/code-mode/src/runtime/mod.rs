@@ -19,6 +19,7 @@ use codex_protocol::ToolName;
 use serde_json::Value as JsonValue;
 use tokio::sync::mpsc;
 
+use crate::StringCodeGeneration;
 use crate::TaskFailureHandler;
 use crate::v8_init::ensure_v8_initialized;
 
@@ -76,6 +77,7 @@ pub(crate) fn spawn_runtime(
     event_tx: mpsc::UnboundedSender<RuntimeEvent>,
     pending_mode: PendingRuntimeMode,
     task_failure_handler: Option<TaskFailureHandler>,
+    string_code_generation: StringCodeGeneration,
 ) -> Result<
     (
         std_mpsc::Sender<RuntimeCommand>,
@@ -100,6 +102,7 @@ pub(crate) fn spawn_runtime(
         enabled_tools,
         source: request.source,
         stored_values,
+        string_code_generation,
     };
 
     spawn_supervised_runtime_thread(event_tx.clone(), task_failure_handler, move || {
@@ -141,6 +144,7 @@ struct RuntimeConfig {
     enabled_tools: Vec<EnabledToolMetadata>,
     source: String,
     stored_values: HashMap<String, JsonValue>,
+    string_code_generation: StringCodeGeneration,
 }
 
 pub(super) struct RuntimeState {
@@ -183,6 +187,9 @@ fn run_runtime(
 
     v8::scope!(let scope, isolate);
     let context = v8::Context::new(scope, Default::default());
+    if config.string_code_generation == StringCodeGeneration::Deny {
+        context.set_allow_generation_from_strings(false);
+    }
     let scope = &mut v8::ContextScope::new(scope, context);
 
     scope.set_slot(RuntimeState {
@@ -343,6 +350,7 @@ mod tests {
     use super::spawn_runtime;
     use super::spawn_supervised_runtime_thread;
     use crate::FunctionCallOutputContentItem;
+    use crate::StringCodeGeneration;
 
     fn execute_request(source: &str) -> ExecuteRequest {
         ExecuteRequest {
@@ -402,6 +410,7 @@ mod tests {
             event_tx,
             PendingRuntimeMode::Continue,
             /*task_failure_handler*/ None,
+            StringCodeGeneration::Allow,
         )
         .unwrap();
 
@@ -445,6 +454,7 @@ await new Promise(() => {});
             event_tx,
             PendingRuntimeMode::PauseUntilResumed,
             /*task_failure_handler*/ None,
+            StringCodeGeneration::Allow,
         )
         .unwrap();
 

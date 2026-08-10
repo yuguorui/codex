@@ -7,8 +7,10 @@ use super::CellId;
 use super::CodeModeNestedToolCall;
 use super::CodeModeSessionDelegate;
 use super::InProcessCodeModeSession;
+use super::NoopCodeModeSessionDelegate;
 use super::NotificationFuture;
 use super::RuntimeResponse;
+use super::StringCodeGeneration;
 use super::ToolInvocationFuture;
 use super::WaitOutcome;
 use super::WaitRequest;
@@ -645,6 +647,83 @@ async fn v8_console_is_not_exposed_on_global_this() {
             error_text: None,
         }
     );
+}
+
+#[tokio::test]
+async fn v8_string_code_generation_remains_enabled_by_default() {
+    let service = InProcessCodeModeSession::new();
+
+    let response = execute(&service, string_code_generation_request()).await;
+
+    assert_eq!(
+        response,
+        RuntimeResponse::Result {
+            cell_id: cell_id("1"),
+            content_items: vec![
+                FunctionCallOutputContentItem::InputText {
+                    text: "allowed".to_string(),
+                },
+                FunctionCallOutputContentItem::InputText {
+                    text: "allowed".to_string(),
+                },
+                FunctionCallOutputContentItem::InputText {
+                    text: "allowed".to_string(),
+                },
+            ],
+            error_text: None,
+        }
+    );
+}
+
+#[tokio::test]
+async fn v8_string_code_generation_can_be_disabled_for_restricted_sessions() {
+    let service = InProcessCodeModeSession::with_delegate_and_string_code_generation(
+        std::sync::Arc::new(NoopCodeModeSessionDelegate),
+        StringCodeGeneration::Deny,
+    );
+
+    let response = execute(&service, string_code_generation_request()).await;
+
+    assert_eq!(
+        response,
+        RuntimeResponse::Result {
+            cell_id: cell_id("1"),
+            content_items: vec![
+                FunctionCallOutputContentItem::InputText {
+                    text: "true".to_string(),
+                },
+                FunctionCallOutputContentItem::InputText {
+                    text: "true".to_string(),
+                },
+                FunctionCallOutputContentItem::InputText {
+                    text: "true".to_string(),
+                },
+            ],
+            error_text: None,
+        }
+    );
+}
+
+fn string_code_generation_request() -> ExecuteRequest {
+    ExecuteRequest {
+        source: r#"
+for (const generate of [
+  () => eval("1 + 1"),
+  () => Function("return 2")(),
+  () => (async function () {}).constructor("return 3")(),
+]) {
+  try {
+    generate();
+    text("allowed");
+  } catch (error) {
+    text(error instanceof EvalError);
+  }
+}
+"#
+        .to_string(),
+        yield_time_ms: None,
+        ..execute_request("")
+    }
 }
 
 #[tokio::test]

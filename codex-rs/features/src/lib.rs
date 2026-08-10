@@ -30,6 +30,7 @@ pub use feature_configs::NonPrefixedMcpToolNamesConfigToml;
 use feature_configs::RemovedAppsMcpPathOverrideConfigToml;
 pub use feature_configs::RolloutBudgetConfigToml;
 pub use feature_configs::TokenBudgetConfigToml;
+pub use feature_configs::WorkflowConfigToml;
 use legacy::LegacyFeatureToggles;
 pub use legacy::legacy_feature_keys;
 
@@ -94,6 +95,8 @@ pub enum Feature {
     // Experimental
     /// Enable JavaScript code mode backed by the in-process V8 runtime.
     CodeMode,
+    /// Enable deterministic JavaScript workflows that orchestrate subagents.
+    Workflows,
     /// Use a 30-second default yield timeout for code mode exec calls.
     CodeModeBufferedExec,
     /// Run JavaScript code mode in the standalone host process.
@@ -659,6 +662,8 @@ pub struct FeaturesToml {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub code_mode_host: Option<FeatureToml<CodeModeHostConfigToml>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub workflows: Option<FeatureToml<WorkflowConfigToml>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub non_prefixed_mcp_tool_names: Option<FeatureToml<NonPrefixedMcpToolNamesConfigToml>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub multi_agent_v2: Option<FeatureToml<MultiAgentV2ConfigToml>>,
@@ -700,6 +705,9 @@ impl FeaturesToml {
         if let Some(enabled) = self.code_mode_host.as_ref().and_then(FeatureToml::enabled) {
             entries.insert(Feature::CodeModeHost.key().to_string(), enabled);
         }
+        if let Some(enabled) = self.workflows.as_ref().and_then(FeatureToml::enabled) {
+            entries.insert(Feature::Workflows.key().to_string(), enabled);
+        }
         if let Some(enabled) = self
             .non_prefixed_mcp_tool_names
             .as_ref()
@@ -734,6 +742,7 @@ impl FeaturesToml {
         let Self {
             code_mode,
             code_mode_host,
+            workflows,
             non_prefixed_mcp_tool_names,
             multi_agent_v2,
             token_budget,
@@ -752,6 +761,8 @@ impl FeaturesToml {
                 materialize_resolved_feature_enabled(code_mode, enabled);
             } else if spec.id == Feature::CodeModeHost {
                 materialize_resolved_feature_enabled(code_mode_host, enabled);
+            } else if spec.id == Feature::Workflows {
+                materialize_resolved_feature_enabled(workflows, enabled);
             } else if spec.id == Feature::NonPrefixedMcpToolNames {
                 materialize_resolved_feature_enabled(non_prefixed_mcp_tool_names, enabled);
             } else if spec.id == Feature::MultiAgentV2 {
@@ -891,6 +902,16 @@ pub const FEATURES: &[FeatureSpec] = &[
         id: Feature::CodeMode,
         key: "code_mode",
         stage: Stage::UnderDevelopment,
+        default_enabled: false,
+    },
+    FeatureSpec {
+        id: Feature::Workflows,
+        key: "workflows",
+        stage: Stage::Experimental {
+            name: "Dynamic workflows",
+            menu_description: "Run reviewed JavaScript workflows that coordinate parallel subagents.",
+            announcement: "NEW: Dynamic workflows can now be enabled from /experimental. Restart Codex after enabling them.",
+        },
         default_enabled: false,
     },
     FeatureSpec {

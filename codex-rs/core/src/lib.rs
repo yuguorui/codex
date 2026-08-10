@@ -33,6 +33,7 @@ pub use codex_thread::TryStartTurnIfIdleError;
 pub use codex_thread::TryStartTurnIfIdleRejectionReason;
 pub use session::turn_context::TurnContext;
 mod agent;
+pub use agent::role::apply_role_to_config as apply_agent_role_to_config;
 mod agent_communication;
 mod attestation;
 mod codex_delegate;

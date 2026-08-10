@@ -27,6 +27,7 @@ use codex_protocol::protocol::Event;
 use codex_protocol::protocol::EventMsg;
 use codex_rollout::state_db::StateDbHandle;
 use codex_thread_store::ThreadStore;
+use codex_workflow_extension::WorkflowService;
 
 use crate::outgoing_message::OutgoingMessageSender;
 use crate::outgoing_message::ThreadScopedOutgoingMessageSender;
@@ -40,6 +41,7 @@ pub(crate) struct ThreadExtensionDependencies {
     pub(crate) analytics_events_client: AnalyticsEventsClient,
     pub(crate) thread_manager: Weak<ThreadManager>,
     pub(crate) goal_service: Arc<GoalService>,
+    pub(crate) workflow_service: WorkflowService,
     pub(crate) environment_manager: Arc<EnvironmentManager>,
     pub(crate) executor_skill_provider: Arc<dyn codex_skills_extension::SkillProvider>,
     pub(crate) git_attribution_base_url: String,
@@ -62,6 +64,7 @@ where
         analytics_events_client,
         thread_manager,
         goal_service,
+        workflow_service,
         environment_manager,
         executor_skill_provider,
         git_attribution_base_url,
@@ -75,11 +78,12 @@ where
             state_db,
             analytics_events_client,
             codex_otel::global(),
-            thread_manager,
+            thread_manager.clone(),
             goal_service,
             |config: &Config| config.features.enabled(codex_features::Feature::Goals),
         );
     }
+    codex_workflow_extension::install(&mut builder, thread_manager, workflow_service);
     codex_git_attribution::install(
         &mut builder,
         auth_manager.clone(),
@@ -120,9 +124,14 @@ pub(crate) fn app_server_extension_event_sink(
     outgoing: Arc<OutgoingMessageSender>,
     thread_state_manager: ThreadStateManager,
 ) -> Arc<dyn ExtensionEventSink> {
+    let workflow_notifications = crate::workflow_events::WorkflowNotificationSender::new(
+        Arc::clone(&outgoing),
+        thread_state_manager.clone(),
+    );
     Arc::new(AppServerExtensionEventSink {
         outgoing,
         thread_state_manager,
+        workflow_notifications,
     })
 }
 
@@ -151,6 +160,7 @@ pub(crate) async fn send_thread_warning(
 struct AppServerExtensionEventSink {
     outgoing: Arc<OutgoingMessageSender>,
     thread_state_manager: ThreadStateManager,
+    workflow_notifications: crate::workflow_events::WorkflowNotificationSender,
 }
 
 const MAX_EXTENSION_WARNING_BYTES: usize = 256;
@@ -190,6 +200,15 @@ impl ExtensionEventSink for AppServerExtensionEventSink {
                         ))
                         .await;
                 });
+            }
+            EventMsg::WorkflowStarted(event) => {
+                self.workflow_notifications.started(event);
+            }
+            EventMsg::WorkflowProgress(event) => {
+                self.workflow_notifications.progress(event);
+            }
+            EventMsg::WorkflowCompleted(event) => {
+                self.workflow_notifications.completed(event);
             }
             msg => {
                 tracing::debug!(event_id = %event.id, ?msg, "dropping unsupported extension event");

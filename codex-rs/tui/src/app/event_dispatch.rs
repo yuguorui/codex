@@ -589,6 +589,87 @@ impl App {
             AppEvent::FetchHooksList { cwd } => {
                 self.fetch_hooks_list(app_server, cwd);
             }
+            AppEvent::OpenWorkflows => {
+                let Some(thread_id) = self.chat_widget.thread_id() else {
+                    self.chat_widget.add_info_message(
+                        "No workflow runs for a new thread yet.".to_string(),
+                        None,
+                    );
+                    return Ok(AppRunControl::Continue);
+                };
+                match app_server.workflow_list(thread_id).await {
+                    Ok(response) => self.chat_widget.open_workflows(response.data),
+                    Err(err) => self
+                        .chat_widget
+                        .add_error_message(format!("Failed to load workflows: {err}")),
+                }
+            }
+            AppEvent::OpenWorkflowDetail { run_id } => {
+                self.chat_widget.open_workflow_detail(&run_id);
+            }
+            AppEvent::OpenWorkflowAgentDetail {
+                run_id,
+                agent_index,
+            } => {
+                self.chat_widget
+                    .open_workflow_agent_detail(run_id, agent_index);
+            }
+            AppEvent::StopWorkflow { run_id } => {
+                let Some(thread_id) = self.chat_widget.thread_id() else {
+                    return Ok(AppRunControl::Continue);
+                };
+                match app_server.workflow_stop(thread_id, run_id).await {
+                    Ok(response) if response.accepted => {}
+                    Ok(_) => self
+                        .chat_widget
+                        .add_info_message("That workflow is no longer running.".to_string(), None),
+                    Err(err) => self
+                        .chat_widget
+                        .add_error_message(format!("Failed to stop workflow: {err}")),
+                }
+            }
+            AppEvent::SkipWorkflowAgent {
+                run_id,
+                agent_index,
+            } => {
+                let Some(thread_id) = self.chat_widget.thread_id() else {
+                    return Ok(AppRunControl::Continue);
+                };
+                match app_server
+                    .workflow_agent_skip(thread_id, run_id, agent_index)
+                    .await
+                {
+                    Ok(response) if response.accepted => {}
+                    Ok(_) => self.chat_widget.add_info_message(
+                        "That workflow agent is no longer running.".to_string(),
+                        None,
+                    ),
+                    Err(err) => self
+                        .chat_widget
+                        .add_error_message(format!("Failed to skip workflow agent: {err}")),
+                }
+            }
+            AppEvent::RetryWorkflowAgent {
+                run_id,
+                agent_index,
+            } => {
+                let Some(thread_id) = self.chat_widget.thread_id() else {
+                    return Ok(AppRunControl::Continue);
+                };
+                match app_server
+                    .workflow_agent_retry(thread_id, run_id, agent_index)
+                    .await
+                {
+                    Ok(response) if response.accepted => {}
+                    Ok(_) => self.chat_widget.add_info_message(
+                        "That workflow agent is not available to retry.".to_string(),
+                        None,
+                    ),
+                    Err(err) => self
+                        .chat_widget
+                        .add_error_message(format!("Failed to retry workflow agent: {err}")),
+                }
+            }
             AppEvent::OpenMarketplaceAddPrompt => {
                 self.chat_widget.open_marketplace_add_prompt();
             }

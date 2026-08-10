@@ -23,8 +23,18 @@ impl ChatWidget {
             }
             _ => RenderableItem::Owned(Box::new(())),
         };
+        let active_workflow_cell_renderable = if self.workflows.has_active_runs() {
+            RenderableItem::Owned(Box::new(TranscriptAreaRenderable {
+                child: &self.workflows,
+                top: 1,
+                right: active_cell_right_reserve,
+            }))
+        } else {
+            RenderableItem::Owned(Box::new(()))
+        };
         let mut flex = FlexRenderable::new();
         flex.push(/*flex*/ 1, active_cell_renderable);
+        flex.push(/*flex*/ 0, active_workflow_cell_renderable);
         flex.push(/*flex*/ 0, active_hook_cell_renderable);
         if let Some(cell) = self.pending_token_activity_output() {
             flex.push(

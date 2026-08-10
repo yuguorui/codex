@@ -170,6 +170,10 @@ Example with notification opt-out:
 - `thread/backgroundTerminals/clean` — terminate all running background terminals for a thread (experimental; requires `capabilities.experimentalApi`); returns `{}` when the cleanup request is accepted.
 - `thread/backgroundTerminals/list` — list running background terminals for a loaded thread (experimental; requires `capabilities.experimentalApi`); returns `data` with the running terminal ids.
 - `thread/backgroundTerminals/terminate` — terminate one running background terminal by app-server `processId` (experimental; requires `capabilities.experimentalApi`); returns whether a process was terminated.
+- `workflow/list` — experimental; page background dynamic-workflow runs for a loaded thread. Returns full task snapshots, including phases, agent progress, usage, failures, and output paths.
+- `workflow/stop` — experimental; request cancellation of an active workflow by `threadId` and `runId`. Returns `accepted: false` when the run is already terminal.
+- `workflow/skipAgent` — experimental; stop the active attempt for one workflow agent and settle that slot as skipped.
+- `workflow/retryAgent` — experimental; stop the active attempt for one workflow agent and schedule another attempt, up to the workflow retry limit.
 - `thread/rollback` — deprecated and will be removed soon. Drop the last N turns from the agent’s in-memory context and persist a rollback marker in the rollout so future resumes see the pruned history; returns the updated `thread` (with `turns` populated) on success. Paginated threads do not support rollback.
 - `turn/start` — add user input to a thread and begin Codex generation; responds with the initial `turn` object and streams `turn/started`, `item/*`, and `turn/completed` notifications. `clientUserMessageId` is optional; when supplied, the corresponding `userMessage` item echoes it as `clientId`. Experimental `runtimeWorkspaceRoots` supplies the default roots for newly resolved environment selections. Explicit `environments[].runtimeWorkspaceRoots` override that fallback with environment-native absolute paths. Prefer experimental `permissions` profile selection by id for permission overrides; the legacy `sandboxPolicy` field is still accepted but cannot be combined with `permissions`. For `collaborationMode`, `settings.developer_instructions: null` means "use built-in instructions for the selected mode". Deprecated experimental `multiAgentMode` is ignored; Ultra reasoning effort selects proactive behavior.
 - `thread/inject_items` — append raw Responses API items to a loaded thread’s model-visible history without starting a user turn; returns `{}` on success.
@@ -1060,6 +1064,75 @@ Use `thread/backgroundTerminals/terminate` to terminate one running background t
 { "id": 37, "result": { "terminated": true } }
 ```
 
+### Example: Inspect and control dynamic workflows
+
+Dynamic workflows are model tools, not a separate launch RPC. Enable the `workflows` feature, initialize with `capabilities.experimentalApi: true`, and start a normal turn in which the user explicitly asks to run a workflow. After any required tool approval, the Workflow tool returns immediately while execution continues in the background. The connection receives `workflow/started`, zero or more `workflow/progress` snapshots, and one terminal `workflow/completed` notification.
+
+Workflow agent execution is independent of the model-visible multi-agent protocol. Agent v1 parent turns retain the `multi_agent_v1` tool namespace, Agent v2 parent turns retain the `collaboration` namespace, and both can launch the same `Workflow` tool and DSL. Workflow-owned child agents expose neither multi-agent namespace nor `Workflow`, which prevents nested orchestration without requiring a v2-only call path.
+
+Structured workflow agents use the provider's native strict JSON Schema output on OpenAI providers. Other providers receive the same bounded schema in the child-agent prompt and are validated locally, so Chat, Anthropic, and open-model providers do not need to implement the Responses `text.format` field.
+
+Use `workflow/list` to rebuild UI state after reconnecting or opening a workflow panel:
+
+```json
+{ "method": "workflow/list", "id": 38, "params": {
+    "threadId": "thr_123",
+    "cursor": null,
+    "limit": 20
+} }
+{ "id": 38, "result": {
+    "data": [
+        {
+            "threadId": "thr_123",
+            "turnId": "turn_456",
+            "taskId": "w4f91a02c",
+            "runId": "wf_01abc234",
+            "workflowName": "code-review",
+            "title": null,
+            "status": "running",
+            "summary": "Running workflow code-review",
+            "transcriptDir": "/path/to/subagents/workflows/wf_01abc234",
+            "scriptPath": "/path/to/workflows/scripts/code-review-wf_01abc234.js",
+            "outputFile": "/path/to/sessions/thr_123/workflows/wf_01abc234.json",
+            "progress": [],
+            "progressVersion": 0,
+            "usage": { "totalTokens": 0, "toolUses": 0, "durationMs": 0, "agentCount": 0 },
+            "failures": [],
+            "error": null,
+            "startedAt": 1786200000,
+            "completedAt": null
+        }
+    ],
+    "nextCursor": null
+} }
+```
+
+Stop a whole run, or control one active agent by its stable progress `index`:
+
+```json
+{ "method": "workflow/stop", "id": 39, "params": {
+    "threadId": "thr_123",
+    "runId": "wf_01abc234"
+} }
+{ "id": 39, "result": { "accepted": true } }
+
+{ "method": "workflow/skipAgent", "id": 40, "params": {
+    "threadId": "thr_123",
+    "runId": "wf_01abc234",
+    "agentIndex": 3
+} }
+{ "id": 40, "result": { "accepted": true } }
+
+{ "method": "workflow/retryAgent", "id": 41, "params": {
+    "threadId": "thr_123",
+    "runId": "wf_01abc234",
+    "agentIndex": 3
+} }
+{ "id": 41, "result": { "accepted": true } }
+```
+
+All four methods are experimental and require `capabilities.experimentalApi`. Workflow notifications are thread-scoped and are sent only to connections currently subscribed to the owning thread.
+
 ### Example: Steer an active turn
 
 Use `turn/steer` to append additional user input to the currently active regular turn. This does
@@ -1438,6 +1511,14 @@ Because audio is intentionally separate from `ThreadItem`, clients can opt out o
 ### MCP server startup events
 
 - `mcpServer/startupStatus/updated` — `{ threadId, name, status, error, failureReason }` when app-server observes an MCP server startup transition. `threadId` identifies the owning thread when startup is thread-scoped and is `null` when startup is app-scoped. `status` is one of `starting`, `ready`, `failed`, or `cancelled`. `error` and `failureReason` are `null` except for `failed`; `failureReason` is `reauthenticationRequired` when stored OAuth credentials have expired and cannot be refreshed, so clients can prompt the user to reconnect the named server.
+
+### Dynamic workflow events (experimental)
+
+- `workflow/started` — identifies the background task and run and includes `threadId`, `turnId`, `taskId`, `runId`, `workflowName`, nullable `title`, `summary`, `transcriptDir`, `scriptPath`, and Unix-second `startedAt`.
+- `workflow/progress` — carries the latest bounded `progress` snapshot plus cumulative `usage`. Progress items are tagged as `workflowPhase`, `workflowAgent`, or `workflowLog`. Agent items expose queue/running/terminal state, retry attempt, cache/skip/block flags, token and tool counts, timing, and bounded prompt/result previews.
+- `workflow/completed` — terminal notification with `status` (`completed`, `failed`, `paused`, or `killed`), `summary`, `outputFile`, nullable `error`, partial `failures`, cumulative `usage`, and Unix-second `completedAt`. `outputFile` points to the run snapshot; the terminal snapshot includes the final `result` alongside progress and usage. Running snapshots are persisted at most once every two seconds, with a final write before this notification.
+
+Clients should key live rows by `(runId, progress item index)` and replace prior snapshots rather than append them. A workflow can outlive the turn that launched it; `turn/completed` does not imply `workflow/completed`. Respect the client animation setting when rendering running-state animation. The built-in TUI uses a truecolor shimmer when supported (with a reduced-motion fallback), cyan for running agents, green for completed work, red for failures or blocked work, and dim styling for skipped or stopped work.
 
 ### Turn events
 

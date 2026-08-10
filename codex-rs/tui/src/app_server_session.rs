@@ -108,6 +108,13 @@ use codex_app_server_protocol::TurnStartResponse;
 use codex_app_server_protocol::TurnSteerParams;
 use codex_app_server_protocol::TurnSteerResponse;
 use codex_app_server_protocol::UserInput;
+use codex_app_server_protocol::WorkflowAgentControlParams;
+use codex_app_server_protocol::WorkflowAgentRetryResponse;
+use codex_app_server_protocol::WorkflowAgentSkipResponse;
+use codex_app_server_protocol::WorkflowListParams;
+use codex_app_server_protocol::WorkflowListResponse;
+use codex_app_server_protocol::WorkflowStopParams;
+use codex_app_server_protocol::WorkflowStopResponse;
 use codex_otel::TelemetryAuthMode;
 use codex_protocol::ThreadId;
 use codex_protocol::approvals::GuardianAssessmentEvent;
@@ -1227,6 +1234,82 @@ impl AppServerSession {
             .request_typed(ClientRequest::SkillsList { request_id, params })
             .await
             .wrap_err("skills/list failed in TUI")
+    }
+
+    pub(crate) async fn workflow_list(
+        &mut self,
+        thread_id: ThreadId,
+    ) -> Result<WorkflowListResponse> {
+        let request_id = self.next_request_id();
+        self.client
+            .request_typed(ClientRequest::WorkflowList {
+                request_id,
+                params: WorkflowListParams {
+                    thread_id: thread_id.to_string(),
+                    cursor: None,
+                    limit: Some(100),
+                },
+            })
+            .await
+            .wrap_err("workflow/list failed in TUI")
+    }
+
+    pub(crate) async fn workflow_stop(
+        &mut self,
+        thread_id: ThreadId,
+        run_id: String,
+    ) -> Result<WorkflowStopResponse> {
+        let request_id = self.next_request_id();
+        self.client
+            .request_typed(ClientRequest::WorkflowStop {
+                request_id,
+                params: WorkflowStopParams {
+                    thread_id: thread_id.to_string(),
+                    run_id,
+                },
+            })
+            .await
+            .wrap_err("workflow/stop failed in TUI")
+    }
+
+    pub(crate) async fn workflow_agent_skip(
+        &mut self,
+        thread_id: ThreadId,
+        run_id: String,
+        agent_index: usize,
+    ) -> Result<WorkflowAgentSkipResponse> {
+        let request_id = self.next_request_id();
+        self.client
+            .request_typed(ClientRequest::WorkflowAgentSkip {
+                request_id,
+                params: WorkflowAgentControlParams {
+                    thread_id: thread_id.to_string(),
+                    run_id,
+                    agent_index,
+                },
+            })
+            .await
+            .wrap_err("workflow/skipAgent failed in TUI")
+    }
+
+    pub(crate) async fn workflow_agent_retry(
+        &mut self,
+        thread_id: ThreadId,
+        run_id: String,
+        agent_index: usize,
+    ) -> Result<WorkflowAgentRetryResponse> {
+        let request_id = self.next_request_id();
+        self.client
+            .request_typed(ClientRequest::WorkflowAgentRetry {
+                request_id,
+                params: WorkflowAgentControlParams {
+                    thread_id: thread_id.to_string(),
+                    run_id,
+                    agent_index,
+                },
+            })
+            .await
+            .wrap_err("workflow/retryAgent failed in TUI")
     }
 
     pub(crate) async fn reload_user_config(&mut self) -> Result<()> {

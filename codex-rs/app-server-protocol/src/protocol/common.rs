@@ -560,6 +560,30 @@ client_request_definitions! {
         serialization: thread_id(params.thread_id),
         response: v2::ThreadGoalClearResponse,
     },
+    #[experimental("workflow/list")]
+    WorkflowList => "workflow/list" {
+        params: v2::WorkflowListParams,
+        serialization: thread_id(params.thread_id),
+        response: v2::WorkflowListResponse,
+    },
+    #[experimental("workflow/stop")]
+    WorkflowStop => "workflow/stop" {
+        params: v2::WorkflowStopParams,
+        serialization: thread_id(params.thread_id),
+        response: v2::WorkflowStopResponse,
+    },
+    #[experimental("workflow/skipAgent")]
+    WorkflowAgentSkip => "workflow/skipAgent" {
+        params: v2::WorkflowAgentControlParams,
+        serialization: thread_id(params.thread_id),
+        response: v2::WorkflowAgentSkipResponse,
+    },
+    #[experimental("workflow/retryAgent")]
+    WorkflowAgentRetry => "workflow/retryAgent" {
+        params: v2::WorkflowAgentControlParams,
+        serialization: thread_id(params.thread_id),
+        response: v2::WorkflowAgentRetryResponse,
+    },
     ThreadMetadataUpdate => "thread/metadata/update" {
         params: v2::ThreadMetadataUpdateParams,
         serialization: thread_id(params.thread_id),
@@ -1661,6 +1685,12 @@ server_notification_definitions! {
     ThreadNameUpdated => "thread/name/updated" (v2::ThreadNameUpdatedNotification),
     ThreadGoalUpdated => "thread/goal/updated" (v2::ThreadGoalUpdatedNotification),
     ThreadGoalCleared => "thread/goal/cleared" (v2::ThreadGoalClearedNotification),
+    #[experimental("workflow/started")]
+    WorkflowStarted => "workflow/started" (v2::WorkflowStartedNotification),
+    #[experimental("workflow/progress")]
+    WorkflowProgress => "workflow/progress" (v2::WorkflowProgressNotification),
+    #[experimental("workflow/completed")]
+    WorkflowCompleted => "workflow/completed" (v2::WorkflowCompletedNotification),
     #[experimental("thread/environment/connected")]
     EnvironmentConnected => "thread/environment/connected" (v2::EnvironmentConnectionNotification),
     #[experimental("thread/environment/disconnected")]

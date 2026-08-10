@@ -24,12 +24,12 @@ pub(super) async fn maybe_record_reminder(
 
 impl Session {
     pub(crate) fn record_rollout_budget_usage(&self, usage: &TokenUsage) -> CodexResult<()> {
-        if self
+        let exhausted = self
             .services
             .agent_control
             .rollout_budget()
-            .record_usage(usage)
-        {
+            .record_usage(usage);
+        if exhausted && self.services.agent_control.enforces_rollout_budget() {
             return Err(CodexErr::SessionBudgetExceeded);
         }
         Ok(())

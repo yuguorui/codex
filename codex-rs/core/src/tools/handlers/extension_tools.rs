@@ -6,11 +6,15 @@ use codex_protocol::protocol::Event;
 use codex_protocol::protocol::EventMsg;
 use codex_tools::ConversationHistory;
 use codex_tools::ExtensionTurnItem;
+use codex_tools::ToolApprovalDecision;
+use codex_tools::ToolApprovalFuture;
+use codex_tools::ToolApprovalRequest;
 use codex_tools::ToolCall as ExtensionToolCall;
 use codex_tools::ToolEnvironment;
 use codex_tools::ToolName;
 use codex_tools::ToolSearchInfo;
 use codex_tools::ToolSpec;
+use codex_tools::ToolTokenBudget;
 use codex_tools::TurnItemEmissionFuture;
 use codex_tools::TurnItemEmitter;
 use codex_utils_string::to_ascii_json_string;
@@ -70,6 +74,31 @@ struct CoreTurnItemEmitter {
     turn: Weak<TurnContext>,
 }
 
+struct CoreToolTokenBudget {
+    session: Weak<Session>,
+}
+
+impl ToolTokenBudget for CoreToolTokenBudget {
+    fn total(&self) -> u64 {
+        self.snapshot().map_or(0, |(total, _)| total)
+    }
+
+    fn spent(&self) -> u64 {
+        self.snapshot().map_or(0, |(_, spent)| spent)
+    }
+}
+
+impl CoreToolTokenBudget {
+    fn snapshot(&self) -> Option<(u64, u64)> {
+        self.session
+            .upgrade()?
+            .services
+            .agent_control
+            .rollout_budget()
+            .token_snapshot()
+    }
+}
+
 async fn emit_legacy_events(session: &Session, turn: &TurnContext, legacy_events: Vec<EventMsg>) {
     for msg in legacy_events {
         session
@@ -110,6 +139,62 @@ impl TurnItemEmitter for CoreTurnItemEmitter {
             session.emit_turn_item_completed(turn.as_ref(), item).await;
             emit_legacy_events(session.as_ref(), turn.as_ref(), legacy_events).await;
         })
+    }
+
+    fn request_approval<'a>(&'a self, request: ToolApprovalRequest) -> ToolApprovalFuture<'a> {
+        Box::pin(async move {
+            let (Some(session), Some(turn)) = (self.session.upgrade(), self.turn.upgrade()) else {
+                return ToolApprovalDecision::Unavailable;
+            };
+            let approve_label = request.approve_label.clone();
+            let response = session
+                .request_user_input(
+                    turn.as_ref(),
+                    request.call_id,
+                    codex_protocol::request_user_input::RequestUserInputArgs {
+                        questions: vec![
+                            codex_protocol::request_user_input::RequestUserInputQuestion {
+                                id: request.id.clone(),
+                                header: request.header,
+                                question: request.question,
+                                is_other: false,
+                                is_secret: false,
+                                options: Some(vec![
+                                    codex_protocol::request_user_input::RequestUserInputQuestionOption {
+                                        label: request.approve_label,
+                                        description: "Start this workflow in the background."
+                                            .to_string(),
+                                    },
+                                    codex_protocol::request_user_input::RequestUserInputQuestionOption {
+                                        label: request.deny_label,
+                                        description: "Do not run this workflow.".to_string(),
+                                    },
+                                ]),
+                            },
+                        ],
+                        auto_resolution_ms: None,
+                    },
+                )
+                .await;
+            let approved = response
+                .as_ref()
+                .and_then(|response| response.answers.get(&request.id))
+                .is_some_and(|answer| answer.answers.iter().any(|value| value == &approve_label));
+            if approved {
+                ToolApprovalDecision::Approved
+            } else {
+                ToolApprovalDecision::Denied
+            }
+        })
+    }
+
+    fn token_budget(&self) -> Option<Arc<dyn ToolTokenBudget>> {
+        let budget = CoreToolTokenBudget {
+            session: self.session.clone(),
+        };
+        budget
+            .snapshot()
+            .map(|_| Arc::new(budget) as Arc<dyn ToolTokenBudget>)
     }
 }
 

@@ -563,6 +563,7 @@ pub(crate) use thread_goal_processor::ThreadGoalRequestProcessor;
 pub(crate) use thread_processor::ThreadRequestProcessor;
 pub(crate) use turn_processor::TurnRequestProcessor;
 pub(crate) use windows_sandbox_processor::WindowsSandboxRequestProcessor;
+pub(crate) use workflow_processor::WorkflowRequestProcessor;
 
 use crate::error_code::internal_error;
 use crate::error_code::invalid_request;
@@ -649,6 +650,7 @@ mod thread_goal_processor;
 mod thread_lifecycle;
 mod thread_resume_redaction;
 mod thread_summary;
+mod workflow_processor;
 
 use self::config_errors::*;
 use self::request_errors::*;

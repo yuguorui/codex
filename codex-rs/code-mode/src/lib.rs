@@ -14,5 +14,6 @@ pub use remote_session::WebSocketCodeModeSessionProvider;
 pub use service::InProcessCodeModeSession;
 pub use service::InProcessCodeModeSessionProvider;
 pub use service::NoopCodeModeSessionDelegate;
+pub use service::StringCodeGeneration;
 pub use v8_init::V8JitMode;
 pub use v8_init::initialize_v8;

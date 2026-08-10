@@ -40,6 +40,7 @@ use crate::request_processors::ThreadGoalRequestProcessor;
 use crate::request_processors::ThreadRequestProcessor;
 use crate::request_processors::TurnRequestProcessor;
 use crate::request_processors::WindowsSandboxRequestProcessor;
+use crate::request_processors::WorkflowRequestProcessor;
 use crate::request_serialization::QueuedInitializedRequest;
 use crate::request_serialization::RequestSerializationQueueKey;
 use crate::request_serialization::RequestSerializationQueues;
@@ -119,6 +120,7 @@ pub(crate) struct MessageProcessor {
     thread_processor: ThreadRequestProcessor,
     turn_processor: TurnRequestProcessor,
     windows_sandbox_processor: WindowsSandboxRequestProcessor,
+    workflow_processor: WorkflowRequestProcessor,
     request_serialization_queues: RequestSerializationQueues,
 }
 
@@ -255,6 +257,10 @@ impl MessageProcessor {
             ),
         );
         let goal_service = Arc::new(GoalService::new());
+        let extension_event_sink =
+            app_server_extension_event_sink(outgoing.clone(), thread_state_manager.clone());
+        let workflow_service =
+            codex_workflow_extension::WorkflowService::new(Arc::clone(&extension_event_sink));
         let thread_manager = Arc::new_cyclic(|thread_manager| {
             let manager = ThreadManager::new(
                 config.as_ref(),
@@ -266,15 +272,13 @@ impl MessageProcessor {
                 thread_extensions(
                     guardian_agent_spawner(thread_manager.clone()),
                     ThreadExtensionDependencies {
-                        event_sink: app_server_extension_event_sink(
-                            outgoing.clone(),
-                            thread_state_manager.clone(),
-                        ),
+                        event_sink: Arc::clone(&extension_event_sink),
                         auth_manager: auth_manager.clone(),
                         state_db: state_db.clone(),
                         analytics_events_client: analytics_events_client.clone(),
                         thread_manager: thread_manager.clone(),
                         goal_service: Arc::clone(&goal_service),
+                        workflow_service: workflow_service.clone(),
                         environment_manager: Arc::clone(&environment_manager_for_extensions),
                         executor_skill_provider: Arc::clone(&executor_skill_provider),
                         git_attribution_base_url: config.chatgpt_base_url.clone(),
@@ -485,6 +489,7 @@ impl MessageProcessor {
             Arc::clone(&config),
             config_manager,
         );
+        let workflow_processor = WorkflowRequestProcessor::new(workflow_service);
 
         Self {
             outgoing,
@@ -511,6 +516,7 @@ impl MessageProcessor {
             thread_processor,
             turn_processor,
             windows_sandbox_processor,
+            workflow_processor,
             request_serialization_queues,
         }
     }
@@ -1261,6 +1267,14 @@ impl MessageProcessor {
                 self.catalog_processor
                     .experimental_feature_list(params)
                     .await
+            }
+            ClientRequest::WorkflowList { params, .. } => self.workflow_processor.list(params),
+            ClientRequest::WorkflowStop { params, .. } => self.workflow_processor.stop(params),
+            ClientRequest::WorkflowAgentSkip { params, .. } => {
+                self.workflow_processor.skip_agent(params)
+            }
+            ClientRequest::WorkflowAgentRetry { params, .. } => {
+                self.workflow_processor.retry_agent(params)
             }
             ClientRequest::PermissionProfileList { params, .. } => {
                 self.catalog_processor.permission_profile_list(params).await

@@ -70,6 +70,7 @@ use codex_features::FeaturesToml;
 use codex_features::MultiAgentV2ConfigToml;
 use codex_features::NetworkProxyConfigToml;
 use codex_features::TokenBudgetConfigToml;
+use codex_features::WorkflowConfigToml;
 use codex_git_utils::resolve_root_git_project_for_trust;
 use codex_http_client::HttpClientFactory;
 use codex_http_client::OutboundProxyPolicy;
@@ -880,6 +881,9 @@ pub struct Config {
 
     /// Maximum nesting depth for V1 agent threads. Ignored by V2.
     pub agent_max_depth: i32,
+
+    /// Maximum child V8 sessions that one dynamic workflow may create.
+    pub workflow_max_child_sessions: usize,
 
     /// User-defined role declarations keyed by role name.
     pub agent_roles: BTreeMap<String, AgentRoleConfig>,
@@ -2684,6 +2688,15 @@ fn resolve_code_mode_config(config_toml: &ConfigToml) -> CodeModeConfig {
     }
 }
 
+const DEFAULT_WORKFLOW_MAX_CHILD_SESSIONS: usize = 16;
+const MAX_WORKFLOW_MAX_CHILD_SESSIONS: usize = 64;
+
+fn resolve_workflow_max_child_sessions(config_toml: &ConfigToml) -> usize {
+    workflow_toml_config(config_toml.features.as_ref())
+        .and_then(|config| config.max_child_sessions)
+        .unwrap_or(DEFAULT_WORKFLOW_MAX_CHILD_SESSIONS)
+}
+
 fn resolve_multi_agent_v2_config(config_toml: &ConfigToml) -> MultiAgentV2Config {
     let base = multi_agent_v2_toml_config(config_toml.features.as_ref());
     let max_concurrent_threads_per_session = base
@@ -2936,6 +2949,13 @@ fn append_usage_hint_text(usage_hint_text: Option<&str>, additional_text: &str) 
 
 fn code_mode_toml_config(features: Option<&FeaturesToml>) -> Option<&CodeModeConfigToml> {
     match features?.code_mode.as_ref()? {
+        FeatureToml::Enabled(_) => None,
+        FeatureToml::Config(config) => Some(config),
+    }
+}
+
+fn workflow_toml_config(features: Option<&FeaturesToml>) -> Option<&WorkflowConfigToml> {
+    match features?.workflows.as_ref()? {
         FeatureToml::Enabled(_) => None,
         FeatureToml::Config(config) => Some(config),
     }
@@ -3649,6 +3669,15 @@ impl Config {
             resolve_experimental_request_user_input_enabled(&cfg);
         let update_plan_enabled = resolve_update_plan_enabled(&cfg);
         let code_mode = resolve_code_mode_config(&cfg);
+        let workflow_max_child_sessions = resolve_workflow_max_child_sessions(&cfg);
+        if !(1..=MAX_WORKFLOW_MAX_CHILD_SESSIONS).contains(&workflow_max_child_sessions) {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                format!(
+                    "features.workflows.max_child_sessions must be between 1 and {MAX_WORKFLOW_MAX_CHILD_SESSIONS}"
+                ),
+            ));
+        }
         let multi_agent_v2 = resolve_multi_agent_v2_config(&cfg);
         let token_budget = resolve_token_budget_config(&cfg, &features)?;
         let rollout_budget = resolve_rollout_budget_config(&cfg, &features)?;
@@ -4097,6 +4126,7 @@ impl Config {
             agent_default_subagent_model,
             agent_default_subagent_reasoning_effort,
             agent_max_depth,
+            workflow_max_child_sessions,
             agent_roles,
             memories: memories_config,
             agent_interrupt_message_enabled,

@@ -276,12 +276,16 @@ impl BottomPane {
             animations_enabled,
             skills,
         } = params;
-        let mut composer = ChatComposer::new(
+        let mut composer = ChatComposer::new_with_config(
             has_input_focus,
             app_event_tx.clone(),
             enhanced_keys_supported,
             placeholder_text,
             disable_paste_burst,
+            ChatComposerConfig {
+                animations_enabled,
+                ..ChatComposerConfig::default()
+            },
         );
         composer.set_frame_requester(frame_requester.clone());
         let keymap = RuntimeKeymap::defaults();
@@ -465,6 +469,11 @@ impl BottomPane {
 
     pub fn set_goal_command_enabled(&mut self, enabled: bool) {
         self.composer.set_goal_command_enabled(enabled);
+        self.request_redraw();
+    }
+
+    pub fn set_workflow_command_enabled(&mut self, enabled: bool) {
+        self.composer.set_workflow_command_enabled(enabled);
         self.request_redraw();
     }
 
