@@ -5,3 +5,5 @@ mod resize_reflow;
 mod status_indicator;
 mod vt100_history;
 mod vt100_live_commit;
+#[cfg(unix)]
+mod workflow_e2e;

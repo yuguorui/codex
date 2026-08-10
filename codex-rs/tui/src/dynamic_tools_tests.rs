@@ -296,7 +296,10 @@ fn activity_metadata_is_retained_without_including_outputs() -> color_eyre::Resu
             {"type": "sleep", "id": "sleep-1", "durationMs": 1000},
             {"type": "imageGeneration", "id": "image-1", "status": "completed",
                 "revisedPrompt": "a cat", "result": "image bytes"},
-            {"type": "enteredReviewMode", "id": "review-1", "review": "review changes"}
+            {"type": "enteredReviewMode", "id": "review-1", "review": "review changes"},
+            {"type": "workflowInputAnalysis", "id": "workflow-input-1"},
+            {"type": "workflowResultRead", "id": "workflow-result-1", "runId": "wf_test",
+                "status": "completed"}
         ]
     }))?;
 
@@ -320,7 +323,10 @@ fn activity_metadata_is_retained_without_including_outputs() -> color_eyre::Resu
             {"type": "sleep", "id": "sleep-1", "durationMs": 1000},
             {"type": "imageGeneration", "id": "image-1", "status": "completed",
                 "revisedPrompt": "a cat", "savedPath": null},
-            {"type": "enteredReviewMode", "id": "review-1", "review": "review changes"}
+            {"type": "enteredReviewMode", "id": "review-1", "review": "review changes"},
+            {"type": "workflowInputAnalysis", "id": "workflow-input-1"},
+            {"type": "workflowResultRead", "id": "workflow-result-1", "runId": "wf_test",
+                "status": "completed"}
         ])
     );
 

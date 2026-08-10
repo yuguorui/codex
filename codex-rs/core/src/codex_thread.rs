@@ -3,9 +3,11 @@ use crate::config::ConstraintResult;
 use crate::context::ContextualUserFragment;
 use crate::elicitation::ElicitationRegistration;
 use crate::session::SessionIo;
+use crate::session::SessionLoopTermination;
 use crate::session::SessionSettingsUpdate;
 use crate::session::new_submission_id;
 use crate::session::session::Session;
+use crate::session::session_loop_termination_from_handle;
 use crate::session::step_settings::StepSettingsUpdate;
 use codex_diagnostics::Gauge;
 use codex_diagnostics::GaugeGuard;
@@ -16,6 +18,7 @@ use codex_features::Feature;
 use codex_history::RolloutItem;
 use codex_otel::SessionTelemetry;
 use codex_otel::current_span_w3c_trace_context;
+use codex_protocol::ResponseItemId;
 use codex_protocol::ThreadId;
 use codex_protocol::config_types::ApprovalsReviewer;
 use codex_protocol::config_types::CollaborationMode;
@@ -27,6 +30,7 @@ use codex_protocol::error::Result as CodexResult;
 use codex_protocol::mcp::CallToolResult;
 use codex_protocol::mcp::ClientMcpExtensions;
 use codex_protocol::models::ActivePermissionProfile;
+use codex_protocol::models::ContentItem;
 use codex_protocol::models::PermissionProfile;
 use codex_protocol::models::ResponseItem;
 use codex_protocol::openai_models::ReasoningEffort;
@@ -67,6 +71,8 @@ use codex_utils_path_uri::PathUri;
 use rmcp::model::ReadResourceRequestParams;
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::sync::OnceLock;
+use std::time::Duration;
 use tokio::sync::Mutex;
 use tokio::sync::oneshot;
 use tokio::sync::watch;
@@ -75,6 +81,13 @@ use tokio_util::sync::CancellationToken;
 use codex_rollout::state_db::StateDbHandle;
 
 static LIVE_THREADS: Gauge = Gauge::new("core.threads.live");
+
+/// Whether forced thread shutdown reached full session teardown before its deadline.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ThreadTeardownStatus {
+    Confirmed,
+    TimedOut,
+}
 
 #[derive(Clone, Debug)]
 pub struct ThreadConfigSnapshot {
@@ -210,10 +223,68 @@ pub struct CodexThread {
     pub(crate) session: Arc<Session>,
     pub(crate) io: SessionIo,
     pub(crate) session_source: SessionSource,
+    event_subscribers: EventSubscribers,
     session_configured: SessionConfiguredEvent,
     rollout_path: Option<PathBuf>,
+    force_close_completion: OnceLock<SessionLoopTermination>,
     out_of_band_elicitations: Mutex<OutOfBandElicitations>,
     _diagnostics_guard: GaugeGuard,
+}
+
+#[derive(Clone, Default)]
+struct EventSubscribers {
+    state: Arc<std::sync::Mutex<EventSubscriberState>>,
+}
+
+#[derive(Default)]
+struct EventSubscriberState {
+    senders: Vec<async_channel::Sender<Event>>,
+    closed: bool,
+}
+
+impl EventSubscribers {
+    fn subscribe(&self) -> CodexThreadEventSubscription {
+        let (sender, receiver) = async_channel::unbounded();
+        let mut state = self
+            .state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if !state.closed {
+            state.senders.push(sender);
+        }
+        CodexThreadEventSubscription { receiver }
+    }
+
+    fn forward(&self, event: &Event) {
+        self.state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .senders
+            .retain(|sender| sender.try_send(event.clone()).is_ok());
+    }
+
+    fn close(&self) {
+        let mut state = self
+            .state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        state.closed = true;
+        state.senders.clear();
+    }
+}
+
+/// A passive event stream that does not consume the thread's primary client event queue.
+pub struct CodexThreadEventSubscription {
+    receiver: async_channel::Receiver<Event>,
+}
+
+impl CodexThreadEventSubscription {
+    pub async fn next_event(&self) -> CodexResult<Event> {
+        self.receiver
+            .recv()
+            .await
+            .map_err(|_| CodexErr::InternalAgentDied)
+    }
 }
 
 #[derive(Default)]
@@ -235,17 +306,30 @@ pub struct BackgroundTerminalInfo {
 impl CodexThread {
     pub(crate) fn new(
         session: Arc<Session>,
-        io: SessionIo,
+        mut io: SessionIo,
         session_configured: SessionConfiguredEvent,
         rollout_path: Option<PathBuf>,
         session_source: SessionSource,
     ) -> Self {
+        let event_subscribers = EventSubscribers::default();
+        let event_subscribers_for_task = event_subscribers.clone();
+        let (primary_sender, primary_receiver) = async_channel::unbounded();
+        let source_receiver = std::mem::replace(&mut io.rx_event, primary_receiver);
+        tokio::spawn(async move {
+            while let Ok(event) = source_receiver.recv().await {
+                event_subscribers_for_task.forward(&event);
+                let _ = primary_sender.send(event).await;
+            }
+            event_subscribers_for_task.close();
+        });
         Self {
             session,
             io,
             session_source,
+            event_subscribers,
             session_configured,
             rollout_path,
+            force_close_completion: OnceLock::new(),
             out_of_band_elicitations: Mutex::new(OutOfBandElicitations::default()),
             _diagnostics_guard: LIVE_THREADS.track(),
         }
@@ -265,8 +349,37 @@ impl CodexThread {
         &self.session.services.thread_extension_data
     }
 
+    /// Returns the project instruction snapshot currently used by this thread.
+    pub async fn loaded_project_instructions(&self) -> Option<Arc<crate::LoadedAgentsMd>> {
+        self.session.services.agents_md_manager.get_loaded().await
+    }
+
     pub async fn shutdown_and_wait(&self) -> CodexResult<()> {
         self.io.shutdown_and_wait().await
+    }
+
+    /// Cancels the active turn, closes submissions, and waits up to `timeout` for teardown.
+    /// Teardown continues after a timeout, and repeated calls wait on the same operation.
+    pub async fn force_close(&self, timeout: Duration) -> ThreadTeardownStatus {
+        self.session.begin_closing().await;
+        let _ = self.io.tx_sub.close();
+        let completion = self
+            .force_close_completion
+            .get_or_init(|| {
+                let session = Arc::clone(&self.session);
+                let session_loop_termination = self.io.session_loop_termination.clone();
+                session_loop_termination_from_handle(tokio::spawn(async move {
+                    session
+                        .abort_all_tasks(codex_protocol::protocol::TurnAbortReason::Replaced)
+                        .await;
+                    session_loop_termination.await;
+                }))
+            })
+            .clone();
+        match tokio::time::timeout(timeout, completion).await {
+            Ok(()) => ThreadTeardownStatus::Confirmed,
+            Err(_) => ThreadTeardownStatus::TimedOut,
+        }
     }
 
     /// Wait until the underlying session loop has terminated.
@@ -580,6 +693,11 @@ impl CodexThread {
         self.io.next_event().await
     }
 
+    /// Subscribes to future events without competing with the primary app-server/TUI consumer.
+    pub fn subscribe_events(&self) -> CodexThreadEventSubscription {
+        self.event_subscribers.subscribe()
+    }
+
     pub async fn agent_status(&self) -> AgentStatus {
         self.io.agent_status().await
     }
@@ -613,6 +731,22 @@ impl CodexThread {
         self.session
             .inject_no_new_turn(vec![item], /*current_turn_context*/ None)
             .await;
+    }
+
+    /// Injects one identified user message and acknowledges only durable history.
+    pub async fn inject_user_message_without_turn_once(
+        &self,
+        item_id: ResponseItemId,
+        message: String,
+    ) -> bool {
+        let item = ResponseItem::Message {
+            id: Some(item_id),
+            role: "user".to_string(),
+            content: vec![ContentItem::InputText { text: message }],
+            phase: None,
+            internal_chat_message_metadata_passthrough: None,
+        };
+        self.session.inject_no_new_turn_once(item).await
     }
 
     /// Record raw Responses API items without starting a new turn.
