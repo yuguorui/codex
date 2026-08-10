@@ -8,17 +8,23 @@ version.workspace = true
 name = "codex_agent_extension"
 path = "src/lib.rs"
 doctest = false
-test = false
+test = true
 
 [lints]
 workspace = true
 
 [dependencies]
+codex-config = { workspace = true }
 codex-core = { workspace = true }
+codex-extension-api = { workspace = true }
 codex-protocol = { workspace = true }
+serde_json = { workspace = true }
+tokio = { workspace = true, features = ["time"] }
+tokio-util = { workspace = true, features = ["rt"] }
 
 [dev-dependencies]
 anyhow = { workspace = true }
+codex-features = { workspace = true }
 core_test_support = { workspace = true }
 pretty_assertions = { workspace = true }
-tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
+tokio = { workspace = true, features = ["macros", "rt-multi-thread", "test-util"] }

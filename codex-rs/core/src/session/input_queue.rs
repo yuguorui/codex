@@ -4,12 +4,14 @@ use crate::state::TurnState;
 use codex_diagnostics::Gauge;
 use codex_diagnostics::GaugeGuard;
 use codex_history::ResponseItemEnvelope;
+use codex_protocol::ResponseItemId;
 use codex_protocol::models::ResponseItem;
 use codex_protocol::protocol::InterAgentCommunication;
 use codex_protocol::turn_input::TurnStartOptions;
 use codex_protocol::user_input::UserInput;
 use serde::Deserialize;
 use serde::Serialize;
+use std::collections::HashSet;
 use std::collections::VecDeque;
 use std::sync::Arc;
 use tokio::sync::Mutex;
@@ -79,6 +81,7 @@ pub(crate) struct TurnInputQueue {
 pub(crate) struct InputQueue {
     activity_tx: watch::Sender<InputQueueActivity>,
     mailbox_pending_mails: Mutex<VecDeque<PendingMailboxCommunication>>,
+    identified_response_items: Mutex<HashSet<ResponseItemId>>,
 }
 
 struct PendingMailboxCommunication {
@@ -93,7 +96,12 @@ impl InputQueue {
         Self {
             activity_tx,
             mailbox_pending_mails: Mutex::new(VecDeque::new()),
+            identified_response_items: Mutex::new(HashSet::new()),
         }
+    }
+
+    pub(crate) async fn reserve_identified_response_item(&self, item_id: ResponseItemId) -> bool {
+        self.identified_response_items.lock().await.insert(item_id)
     }
 
     pub(crate) async fn subscribe_activity(
@@ -105,7 +113,9 @@ impl InputQueue {
     ) {
         let activity_rx = self.activity_tx.subscribe();
         let has_pending_steer = if let Some(turn_state) = turn_state {
-            turn_state.lock().await.pending_input.has_pending_input()
+            let turn_state = turn_state.lock().await;
+            turn_state.pending_input.has_pending_input()
+                || turn_state.user_input_activity_observed()
         } else {
             false
         };
@@ -259,9 +269,15 @@ impl InputQueue {
         turn_state: &Mutex<TurnState>,
         input: Vec<TurnInput>,
     ) {
+        let has_user_input = input
+            .iter()
+            .any(|input| matches!(input, TurnInput::UserInput { .. }));
         {
             let mut turn_state = turn_state.lock().await;
-            turn_state.pending_input.items.extend(input);
+            turn_state.pending_input.extend_deduplicated(input);
+            if has_user_input {
+                turn_state.mark_user_input_activity_observed();
+            }
             turn_state.accept_mailbox_delivery_for_current_turn();
         }
         self.activity_tx.send_replace(InputQueueActivity::Steer);
@@ -272,14 +288,20 @@ impl InputQueue {
         turn_state: &Mutex<TurnState>,
         input: Vec<TurnInput>,
     ) {
-        turn_state.lock().await.pending_input.items.extend(input);
+        turn_state
+            .lock()
+            .await
+            .pending_input
+            .extend_deduplicated(input);
     }
 
     pub(crate) async fn take_pending_input_for_turn_state(
         &self,
         turn_state: &Mutex<TurnState>,
     ) -> Vec<TurnInput> {
-        turn_state.lock().await.pending_input.items.split_off(0)
+        let mut turn_state = turn_state.lock().await;
+        turn_state.clear_user_input_activity_observed();
+        turn_state.pending_input.items.split_off(0)
     }
 
     #[expect(
@@ -302,6 +324,7 @@ impl InputQueue {
                     let accepts_mailbox_delivery =
                         turn_state.accepts_mailbox_delivery_for_current_turn();
                     let pending_input = if accepts_mailbox_delivery {
+                        turn_state.clear_user_input_activity_observed();
                         turn_state.pending_input.items.split_off(0)
                     } else {
                         Vec::new()
@@ -370,6 +393,35 @@ impl InputQueue {
 }
 
 impl TurnInputQueue {
+    fn extend_deduplicated(&mut self, input: Vec<TurnInput>) {
+        for item in input {
+            let duplicate = match &item {
+                TurnInput::ResponseItem(candidate) => candidate.item.id().is_some_and(|id| {
+                    self.items.iter().any(|existing| {
+                        matches!(
+                            existing,
+                            TurnInput::ResponseItem(existing)
+                                if existing.item.id() == Some(id)
+                        )
+                    })
+                }),
+                TurnInput::FunctionCallOutput(candidate) => candidate.id().is_some_and(|id| {
+                    self.items.iter().any(|existing| {
+                        matches!(
+                            existing,
+                            TurnInput::FunctionCallOutput(existing)
+                                if existing.id() == Some(id)
+                        )
+                    })
+                }),
+                TurnInput::UserInput { .. } | TurnInput::InterAgentCommunication(_) => false,
+            };
+            if !duplicate {
+                self.items.push(item);
+            }
+        }
+    }
+
     fn has_pending_input(&self) -> bool {
         self.items.iter().any(|input| {
             matches!(
@@ -418,6 +470,26 @@ mod tests {
             panic!("expected response item");
         };
         assert!(envelope.metadata.is_none());
+    }
+
+    #[test]
+    fn pending_response_items_are_deduplicated_by_stable_id() {
+        let item = ResponseItem::Message {
+            id: Some(codex_protocol::ResponseItemId::with_suffix(
+                "msg",
+                "workflow-completed",
+            )),
+            role: "user".to_string(),
+            content: Vec::new(),
+            phase: None,
+            internal_chat_message_metadata_passthrough: None,
+        };
+        let mut pending = TurnInputQueue::default();
+
+        pending.extend_deduplicated(vec![TurnInput::ResponseItem(item.clone().into())]);
+        pending.extend_deduplicated(vec![TurnInput::ResponseItem(item.into())]);
+
+        assert_eq!(pending.items.len(), 1);
     }
 
     fn make_mail(
@@ -520,6 +592,49 @@ mod tests {
                 }],
             )
             .await;
+
+        let (_activity_rx, pending_activity) =
+            input_queue.subscribe_activity(Some(&turn_state)).await;
+
+        assert_eq!(pending_activity, Some(InputQueueActivity::Steer));
+    }
+
+    #[tokio::test]
+    async fn input_queue_does_not_report_response_item_as_user_input() {
+        let input_queue = InputQueue::new();
+        let turn_state = Mutex::new(TurnState::default());
+        let (mut activity_rx, pending_activity) =
+            input_queue.subscribe_activity(Some(&turn_state)).await;
+        assert_eq!(pending_activity, None);
+        input_queue
+            .extend_pending_input_and_accept_mailbox_delivery_for_turn_state(
+                &turn_state,
+                vec![TurnInput::ResponseItem(ResponseItem::Other.into())],
+            )
+            .await;
+
+        activity_rx.changed().await.expect("response item update");
+        assert_eq!(*activity_rx.borrow_and_update(), InputQueueActivity::Steer);
+        assert!(!turn_state.lock().await.user_input_activity_observed());
+    }
+
+    #[tokio::test]
+    async fn input_queue_reports_steer_after_pending_input_is_drained() {
+        let input_queue = InputQueue::new();
+        let turn_state = Mutex::new(TurnState::default());
+        input_queue
+            .extend_pending_input_and_accept_mailbox_delivery_for_turn_state(
+                &turn_state,
+                vec![TurnInput::UserInput {
+                    content: vec![UserInput::Text {
+                        text: "already handled".to_string(),
+                        text_elements: Vec::new(),
+                    }],
+                    client_id: None,
+                }],
+            )
+            .await;
+        turn_state.lock().await.pending_input.items.clear();
 
         let (_activity_rx, pending_activity) =
             input_queue.subscribe_activity(Some(&turn_state)).await;
