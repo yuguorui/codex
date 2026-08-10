@@ -813,6 +813,9 @@
             "web_search_request": {
               "type": "boolean"
             },
+            "workflows": {
+              "$ref": "#/definitions/FeatureToml_for_WorkflowConfigToml"
+            },
             "workspace_dependencies": {
               "type": "boolean"
             },
@@ -1097,6 +1100,16 @@
         },
         {
           "$ref": "#/definitions/TokenBudgetConfigToml"
+        }
+      ]
+    },
+    "FeatureToml_for_WorkflowConfigToml": {
+      "anyOf": [
+        {
+          "type": "boolean"
+        },
+        {
+          "$ref": "#/definitions/WorkflowConfigToml"
         }
       ]
     },
@@ -4995,6 +5008,22 @@
         }
       ]
     },
+    "WorkflowConfigToml": {
+      "additionalProperties": false,
+      "properties": {
+        "enabled": {
+          "type": "boolean"
+        },
+        "max_child_sessions": {
+          "description": "Maximum number of child V8 workflow sessions created by one workflow run.",
+          "format": "uint",
+          "maximum": 64.0,
+          "minimum": 1.0,
+          "type": "integer"
+        }
+      },
+      "type": "object"
+    },
     "WorkspaceRootsToml": {
       "type": "object"
     }
@@ -5542,6 +5571,9 @@
         },
         "web_search_request": {
           "type": "boolean"
+        },
+        "workflows": {
+          "$ref": "#/definitions/FeatureToml_for_WorkflowConfigToml"
         },
         "workspace_dependencies": {
           "type": "boolean"
