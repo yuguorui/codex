@@ -469,11 +469,17 @@ pub fn item_event_to_server_notification(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use codex_extension_items::ExtensionItem;
+    use codex_extension_items::workflow::WorkflowResultReadItem;
+    use codex_extension_items::workflow::WorkflowResultReadStatus;
     use codex_protocol::ThreadId;
+    use codex_protocol::items::TurnItem as CoreTurnItem;
     use codex_protocol::protocol::CollabResumeBeginEvent;
     use codex_protocol::protocol::CollabResumeEndEvent;
     use codex_protocol::protocol::ExecCommandOutputDeltaEvent;
     use codex_protocol::protocol::ExecOutputStream;
+    use codex_protocol::protocol::ItemCompletedEvent;
+    use codex_protocol::protocol::ItemStartedEvent;
     use pretty_assertions::assert_eq;
 
     fn assert_item_started_server_notification(
@@ -608,6 +614,65 @@ mod tests {
                 turn_id: "turn-1".to_string(),
                 item_id: "call-1".to_string(),
                 delta: "hello".to_string(),
+            },
+        );
+    }
+
+    #[test]
+    fn workflow_result_read_lifecycle_maps_to_v2_notifications() {
+        let thread_id = ThreadId::new();
+        let item = |status| {
+            CoreTurnItem::Extension(ExtensionItem::WorkflowResultRead(WorkflowResultReadItem {
+                id: "read-result".to_string(),
+                run_id: None,
+                status,
+            }))
+        };
+
+        assert_item_started_server_notification(
+            item_event_to_server_notification(
+                EventMsg::ItemStarted(ItemStartedEvent {
+                    thread_id,
+                    turn_id: "turn-1".to_string(),
+                    item: item(WorkflowResultReadStatus::InProgress),
+                    started_at_ms: 1,
+                }),
+                "thread-1",
+                "turn-1",
+            ),
+            ItemStartedNotification {
+                thread_id: "thread-1".to_string(),
+                turn_id: "turn-1".to_string(),
+                item: ThreadItem::WorkflowResultRead(WorkflowResultReadItem {
+                    id: "read-result".to_string(),
+                    run_id: None,
+                    status: WorkflowResultReadStatus::InProgress,
+                }),
+                started_at_ms: 1,
+            },
+        );
+
+        assert_item_completed_server_notification(
+            item_event_to_server_notification(
+                EventMsg::ItemCompleted(ItemCompletedEvent {
+                    thread_id,
+                    turn_id: "turn-1".to_string(),
+                    item: item(WorkflowResultReadStatus::Failed),
+                    started_at_ms: Some(1),
+                    completed_at_ms: 2,
+                }),
+                "thread-1",
+                "turn-1",
+            ),
+            ItemCompletedNotification {
+                thread_id: "thread-1".to_string(),
+                turn_id: "turn-1".to_string(),
+                item: ThreadItem::WorkflowResultRead(WorkflowResultReadItem {
+                    id: "read-result".to_string(),
+                    run_id: None,
+                    status: WorkflowResultReadStatus::Failed,
+                }),
+                completed_at_ms: 2,
             },
         );
     }

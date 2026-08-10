@@ -108,6 +108,13 @@ pub(crate) struct ListedAgent {
     pub(crate) agent_status: AgentStatus,
 }
 
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub(crate) enum RolloutBudgetEnforcement {
+    #[default]
+    Enforce,
+    Observe,
+}
+
 /// Control-plane handle for multi-agent operations.
 /// `AgentControl` is held by each session (via `SessionServices`). It provides capability to
 /// spawn new agents and the inter-agent communication layer.
@@ -132,6 +139,7 @@ pub(crate) struct AgentControl {
     rollout_budget: Arc<RolloutBudget>,
     /// The user-selected root routing tier, shared by the entire agent tree.
     root_service_tier: Arc<ArcSwapOption<String>>,
+    rollout_budget_enforcement: RolloutBudgetEnforcement,
 }
 
 impl Default for AgentControl {
@@ -151,6 +159,20 @@ impl AgentControl {
         thread_id_generator: ThreadIdGenerator,
         rollout_budget: Option<RolloutBudgetConfig>,
     ) -> Self {
+        Self::new_with_rollout_budget_enforcement(
+            manager,
+            thread_id_generator,
+            rollout_budget,
+            RolloutBudgetEnforcement::Enforce,
+        )
+    }
+
+    pub(crate) fn new_with_rollout_budget_enforcement(
+        manager: Weak<ThreadManagerState>,
+        thread_id_generator: ThreadIdGenerator,
+        rollout_budget: Option<RolloutBudgetConfig>,
+        rollout_budget_enforcement: RolloutBudgetEnforcement,
+    ) -> Self {
         let control = Self {
             session_id: SessionId::default(),
             manager,
@@ -160,11 +182,36 @@ impl AgentControl {
             agent_execution_limiter: Arc::default(),
             rollout_budget: Arc::default(),
             root_service_tier: Arc::new(ArcSwapOption::from(None)),
+            rollout_budget_enforcement,
         };
         if let Some(rollout_budget) = rollout_budget {
             control.rollout_budget.configure(rollout_budget);
         }
         control
+    }
+
+    pub(crate) fn new_with_shared_rollout_budget(
+        manager: Weak<ThreadManagerState>,
+        source: &Self,
+        rollout_budget_enforcement: RolloutBudgetEnforcement,
+    ) -> Self {
+        Self {
+            manager,
+            thread_id_generator: Arc::clone(&source.thread_id_generator),
+            rollout_budget: Arc::clone(&source.rollout_budget),
+            rollout_budget_enforcement,
+            ..Default::default()
+        }
+    }
+
+    pub(crate) fn with_shared_registry_without_rollout_budget(&self) -> Self {
+        Self {
+            v2_residency: Arc::default(),
+            agent_execution_limiter: Arc::default(),
+            rollout_budget: Arc::default(),
+            rollout_budget_enforcement: RolloutBudgetEnforcement::Observe,
+            ..self.clone()
+        }
     }
 
     pub(crate) fn with_session_id(mut self, session_id: SessionId, max_threads: usize) -> Self {
@@ -183,6 +230,10 @@ impl AgentControl {
 
     pub(crate) fn rollout_budget(&self) -> &RolloutBudget {
         self.rollout_budget.as_ref()
+    }
+
+    pub(crate) fn enforces_rollout_budget(&self) -> bool {
+        self.rollout_budget_enforcement == RolloutBudgetEnforcement::Enforce
     }
 
     /// Send rich user input items to an existing agent thread.
@@ -391,11 +442,16 @@ impl AgentControl {
     /// Fetch the last known status for `agent_id`, returning `NotFound` when unavailable.
     pub(crate) async fn get_status(&self, agent_id: ThreadId) -> AgentStatus {
         let Ok(state) = self.upgrade() else {
-            // No agent available if upgrade fails.
-            return AgentStatus::NotFound;
+            return self
+                .state
+                .closed_agent_status(agent_id)
+                .unwrap_or(AgentStatus::NotFound);
         };
         let Ok(thread) = state.get_thread(agent_id).await else {
-            return AgentStatus::NotFound;
+            return self
+                .state
+                .closed_agent_status(agent_id)
+                .unwrap_or(AgentStatus::NotFound);
         };
         thread.agent_status().await
     }
@@ -410,8 +466,41 @@ impl AgentControl {
         }
     }
 
+    pub(crate) fn register_fresh_subagent(
+        &self,
+        parent_thread_id: ThreadId,
+        thread_id: ThreadId,
+        agent_nickname: Option<String>,
+        agent_role: Option<String>,
+    ) -> CodexResult<()> {
+        self.state.register_root_thread(parent_thread_id);
+        let reservation = self.state.reserve_unmetered_spawn_slot();
+        reservation.commit(AgentMetadata {
+            agent_id: Some(thread_id),
+            owning_root_thread_id: self
+                .state
+                .agent_metadata_for_thread(parent_thread_id)
+                .and_then(|metadata| metadata.owning_root_thread_id)
+                .or(Some(parent_thread_id)),
+            agent_path: None,
+            agent_nickname,
+            agent_role,
+        });
+        Ok(())
+    }
+
     pub(crate) fn get_agent_metadata(&self, agent_id: ThreadId) -> Option<AgentMetadata> {
         self.state.agent_metadata_for_thread(agent_id)
+    }
+
+    pub(crate) fn authorize_agent_access(
+        &self,
+        caller_thread_id: ThreadId,
+        target_thread_id: ThreadId,
+    ) -> CodexResult<AgentMetadata> {
+        self.state
+            .authorize_agent_access(caller_thread_id, target_thread_id)
+            .ok_or(CodexErr::ThreadNotFound(target_thread_id))
     }
 
     pub(crate) fn ensure_agent_known(&self, agent_id: ThreadId) -> CodexResult<AgentMetadata> {
@@ -469,8 +558,17 @@ impl AgentControl {
         agent_id: ThreadId,
     ) -> CodexResult<watch::Receiver<AgentStatus>> {
         let state = self.upgrade()?;
-        let thread = state.get_thread(agent_id).await?;
-        Ok(thread.subscribe_status())
+        match state.get_thread(agent_id).await {
+            Ok(thread) => Ok(thread.subscribe_status()),
+            Err(error) => match self.state.closed_agent_status(agent_id) {
+                Some(status) => Ok(watch::channel(status).1),
+                None => Err(error),
+            },
+        }
+    }
+
+    pub(crate) fn remember_closed_agent_status(&self, agent_id: ThreadId, status: AgentStatus) {
+        self.state.remember_closed_agent_status(agent_id, status);
     }
 
     pub(crate) async fn format_environment_context_subagents(
@@ -682,6 +780,7 @@ impl AgentControl {
         )?);
         Ok(AgentMetadata {
             agent_id: None,
+            owning_root_thread_id: None,
             agent_path,
             agent_nickname,
             agent_role,
@@ -702,13 +801,18 @@ impl AgentControl {
         if depth == 1 {
             self.state.register_root_thread(parent_thread_id);
         }
-        let agent_metadata = self.prepare_agent_metadata(
+        let mut agent_metadata = self.prepare_agent_metadata(
             reservation,
             config,
             agent_path,
             agent_role,
             preferred_agent_nickname,
         )?;
+        agent_metadata.owning_root_thread_id = self
+            .state
+            .agent_metadata_for_thread(parent_thread_id)
+            .and_then(|metadata| metadata.owning_root_thread_id)
+            .or(Some(parent_thread_id));
         let session_source = SessionSource::SubAgent(SubAgentSource::ThreadSpawn {
             parent_thread_id,
             depth,
@@ -796,6 +900,11 @@ impl AgentControl {
                         .agent_metadata_for_thread(child_thread_id)
                         .unwrap_or(AgentMetadata {
                             agent_id: Some(child_thread_id),
+                            owning_root_thread_id: self
+                                .state
+                                .agent_metadata_for_thread(parent_thread_id)
+                                .and_then(|metadata| metadata.owning_root_thread_id)
+                                .or(Some(parent_thread_id)),
                             ..Default::default()
                         }),
                 ));
@@ -815,7 +924,7 @@ impl AgentControl {
         Ok(children_by_parent)
     }
 
-    async fn persist_thread_spawn_edge_for_source(
+    pub(crate) async fn persist_thread_spawn_edge_for_source(
         &self,
         child_thread: &crate::CodexThread,
         child_thread_id: ThreadId,

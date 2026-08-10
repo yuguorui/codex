@@ -285,6 +285,9 @@ impl Session {
         input: Vec<TurnInput>,
         task: T,
     ) {
+        if self.is_closing() {
+            return;
+        }
         let task: Arc<dyn AnySessionTask> = Arc::new(task);
         let task_kind = task.kind();
         let span_name = task.span_name();
@@ -320,6 +323,9 @@ impl Session {
         }
         let turn_state = {
             let mut active = self.active_turn.lock().await;
+            if self.is_closing() {
+                return;
+            }
             let turn = active.get_or_insert_with(ActiveTurn::default);
             debug_assert!(turn.task.is_none());
             Arc::clone(&turn.turn_state)
@@ -332,6 +338,9 @@ impl Session {
             .await;
 
         let mut active = self.active_turn.lock().await;
+        if self.is_closing() {
+            return;
+        }
         let turn = active.get_or_insert_with(ActiveTurn::default);
         debug_assert!(turn.task.is_none());
         let agent_execution_guard = self.services.agent_control.execution_guard(
@@ -447,6 +456,9 @@ impl Session {
         self: &Arc<Self>,
         sub_id: String,
     ) {
+        if self.is_closing() {
+            return;
+        }
         if !self.input_queue.has_pending_mailbox_items().await
             || (!self.input_queue.has_trigger_turn_mailbox_items().await
                 && !self.has_outstanding_durable_sleep())
@@ -456,7 +468,7 @@ impl Session {
 
         let turn_state = {
             let mut active_turn = self.active_turn.lock().await;
-            if active_turn.is_some() {
+            if self.is_closing() || active_turn.is_some() {
                 return;
             }
             let active_turn = active_turn.get_or_insert_with(ActiveTurn::default);
