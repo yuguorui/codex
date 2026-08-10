@@ -19,6 +19,8 @@ use codex_protocol::user_input::UserInput;
 use serde::Deserialize;
 use serde_json::Value;
 
+use crate::context::ContextualUserFragment;
+use crate::context::GuardianExtensionApproval;
 use crate::context::GuardianReviewEvidence;
 use crate::context::NodeReplReviewEvidence;
 use crate::context::NodeReplReviewEvidenceMode;
@@ -129,11 +131,16 @@ pub(crate) async fn build_guardian_prompt_items_with_parent_turn(
         .get_or_init(GuardianReviewEvidence::default)
         .user_input_snapshot(history.as_ref())
         .fragments;
+    let excluded_call_id = match &request {
+        GuardianApprovalRequest::ExtensionTool { id, .. } => Some(id.as_str()),
+        _ => None,
+    };
     let ComposedContext {
         authorization,
         transcript: transcript_entries,
     } = collect_guardian_context(
         &GuardianReviewHistory(history.as_ref()),
+        excluded_call_id,
         node_repl_result_token_limit,
         root_authorization.as_deref().unwrap_or_default(),
         &trusted_user_inputs,
@@ -143,6 +150,8 @@ pub(crate) async fn build_guardian_prompt_items_with_parent_turn(
         transcript_entry_count: transcript_entries.len(),
     };
     let planned_action_json = format_guardian_action_pretty(&request)?;
+    let render_planned_action_json =
+        !matches!(&request, GuardianApprovalRequest::ExtensionTool { .. });
 
     let prompt_shape = match mode {
         GuardianPromptMode::Full => GuardianPromptShape::Full,
@@ -266,6 +275,34 @@ pub(crate) async fn build_guardian_prompt_items_with_parent_turn(
             );
             push_text("Network access JSON:\n".to_string());
         }
+        GuardianApprovalRequest::ExtensionTool {
+            tool_name,
+            artifact,
+            ..
+        } => {
+            push_text(headings.action_intro.to_string());
+            push_text(">>> APPROVAL REQUEST START\n".to_string());
+            if let Some(reason) = reasons.retry.or(reasons.approval) {
+                let reason = truncate_text(
+                    &reason,
+                    TruncationPolicy::Tokens(GUARDIAN_MAX_APPROVAL_REASON_TOKENS),
+                );
+                push_text("Retry reason:\n".to_string());
+                push_text(format!("{reason}\n\n"));
+            }
+            push_text(
+                "Review the complete content-addressed extension action with `read_guardian_approval_artifact`. Continue reading from each returned offset until the artifact is complete, then assess that exact action.\n"
+                    .to_string(),
+            );
+            push_text(
+                GuardianExtensionApproval::new(
+                    tool_name,
+                    artifact.sha256(),
+                    artifact.byte_length(),
+                )
+                .render(),
+            );
+        }
         _ => {
             push_text(headings.action_intro.to_string());
             push_text(">>> APPROVAL REQUEST START\n".to_string());
@@ -286,7 +323,9 @@ pub(crate) async fn build_guardian_prompt_items_with_parent_turn(
             push_text("Planned action JSON:\n".to_string());
         }
     }
-    push_text(format!("{}\n", planned_action_json.text));
+    if render_planned_action_json {
+        push_text(format!("{}\n", planned_action_json.text));
+    }
     push_text(">>> APPROVAL REQUEST END\n".to_string());
     Ok(GuardianPromptItems {
         items,
@@ -472,6 +511,7 @@ fn render_guardian_transcript_entries_with_offset(
 /// Node REPL cap; the cursor still counts every non-empty evidence entry.
 pub(super) fn collect_guardian_context(
     history: &dyn SectionHistory,
+    excluded_call_id: Option<&str>,
     node_repl_result_token_limit: usize,
     root_conversation: &[GuardianRootMessage],
     trusted_user_answers: &[String],
@@ -486,7 +526,10 @@ pub(super) fn collect_guardian_context(
     };
     default_registry().compose(&SectionInput {
         target: ContextTarget::Sync,
-        history: &FilteredGuardianHistory(history),
+        history: &FilteredGuardianHistory {
+            history,
+            excluded_call_id,
+        },
         transcript: &transcript,
         root_conversation,
         trusted_user_answers,
@@ -505,21 +548,47 @@ impl SectionHistory for GuardianReviewHistory<'_> {
     }
 }
 
-struct FilteredGuardianHistory<'a>(&'a dyn SectionHistory);
+struct FilteredGuardianHistory<'a> {
+    history: &'a dyn SectionHistory,
+    excluded_call_id: Option<&'a str>,
+}
 
 impl SectionHistory for FilteredGuardianHistory<'_> {
     fn retained_context(&self) -> Option<&codex_history::RetainedContext> {
-        self.0.retained_context()
+        self.history.retained_context()
     }
 
     fn items(&self) -> Box<dyn Iterator<Item = &ResponseItem> + Send + '_> {
-        Box::new(self.0.items().filter(|item| {
-            !matches!(
-                item,
-                ResponseItem::Message { role, content, .. }
-                    if role == "user" && is_contextual_user_message_content(content)
-            )
+        Box::new(self.history.items().filter(move |item| {
+            if is_contextual_user_message_content_filter(item) {
+                return false;
+            }
+            !is_excluded_tool_exchange(item, self.excluded_call_id)
         }))
+    }
+}
+
+fn is_contextual_user_message_content_filter(item: &ResponseItem) -> bool {
+    matches!(
+        item,
+        ResponseItem::Message { role, content, .. }
+            if role == "user" && is_contextual_user_message_content(content)
+    )
+}
+
+fn is_excluded_tool_exchange(item: &ResponseItem, excluded_call_id: Option<&str>) -> bool {
+    let Some(excluded_call_id) = excluded_call_id else {
+        return false;
+    };
+    match item {
+        ResponseItem::FunctionCall { call_id, .. }
+        | ResponseItem::CustomToolCall { call_id, .. }
+        | ResponseItem::FunctionCallOutput {
+            call_id: Some(call_id),
+            ..
+        }
+        | ResponseItem::CustomToolCallOutput { call_id, .. } => call_id == excluded_call_id,
+        _ => false,
     }
 }
 

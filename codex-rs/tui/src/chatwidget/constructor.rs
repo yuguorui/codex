@@ -38,6 +38,7 @@ impl ChatWidget {
         let mut config = config;
         config.model = model.clone();
         let prevent_idle_sleep = config.features.enabled(Feature::PreventIdleSleep);
+        let workflows = WorkflowUiState::new(config.animations);
         let placeholder = PLACEHOLDER.to_string();
         let side_placeholder = SIDE_PLACEHOLDER.to_string();
 
@@ -204,6 +205,7 @@ impl ChatWidget {
             review: ReviewState::default(),
             active_hook_cell: None,
             pet_http_client,
+            workflows,
             ambient_pet: None,
             pet_picker_preview_state: crate::pets::PetPickerPreviewState::default(),
             pet_picker_preview_pet: None,
@@ -237,6 +239,7 @@ impl ChatWidget {
             quit_shortcut_key: None,
             turn_runtime_metrics: RuntimeMetricsSummary::default(),
             last_rendered_width: std::cell::Cell::new(None),
+            last_screen_height: std::cell::Cell::new(None),
             feedback,
             current_rollout_path: None,
             current_cwd,
@@ -311,6 +314,7 @@ impl ChatWidget {
         widget
             .bottom_pane
             .set_token_activity_command_enabled(widget.has_codex_backend_auth);
+        widget.sync_workflow_command_enabled();
         widget.refresh_status_surfaces();
         widget.bottom_pane.set_astra_sparkle(
             widget.effective_collaboration_mode().model(),
