@@ -318,6 +318,10 @@ enabled = false
                 SessionSource::Exec.restriction_product(),
             ),
         );
+        let event_sink: Arc<dyn codex_extension_api::ExtensionEventSink> =
+            Arc::new(NoopExtensionEventSink);
+        let workflow_service =
+            codex_workflow_extension::WorkflowService::new(Arc::clone(&event_sink));
         let thread_manager = Arc::new_cyclic(|thread_manager| {
             ThreadManager::new(
                 &good_config,
@@ -329,12 +333,13 @@ enabled = false
                 thread_extensions(
                     guardian_agent_spawner(thread_manager.clone()),
                     ThreadExtensionDependencies {
-                        event_sink: Arc::new(NoopExtensionEventSink),
+                        event_sink: Arc::clone(&event_sink),
                         auth_manager: auth_manager.clone(),
                         state_db: Some(state_db.clone()),
                         analytics_events_client: codex_analytics::AnalyticsEventsClient::disabled(),
                         thread_manager: thread_manager.clone(),
                         goal_service: Arc::new(codex_goal_extension::GoalService::new()),
+                        workflow_service: workflow_service.clone(),
                         environment_manager: Arc::clone(&environment_manager),
                         executor_skill_provider: Arc::clone(&executor_skill_provider),
                         git_attribution_base_url: good_config.chatgpt_base_url.clone(),

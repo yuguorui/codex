@@ -173,6 +173,37 @@ async fn test_create_client_sets_default_headers() {
 }
 
 #[tokio::test]
+async fn route_client_connects_directly_to_loopback() -> anyhow::Result<()> {
+    use codex_http_client::OutboundProxyPolicy;
+    use wiremock::Mock;
+    use wiremock::MockServer;
+    use wiremock::ResponseTemplate;
+    use wiremock::matchers::method;
+
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .respond_with(ResponseTemplate::new(200))
+        .expect(2)
+        .mount(&server)
+        .await;
+
+    for policy in [
+        OutboundProxyPolicy::ReqwestDefault,
+        OutboundProxyPolicy::RespectSystemProxy,
+    ] {
+        let client = create_client_for_route(
+            &HttpClientFactory::new(policy),
+            &server.uri(),
+            ClientRouteClass::Api,
+        )?;
+        let response = client.get(server.uri()).send().await?;
+        assert!(response.status().is_success());
+    }
+
+    Ok(())
+}
+
+#[tokio::test]
 async fn raw_auth_client_does_not_log_sensitive_request_or_response_data() {
     use wiremock::Mock;
     use wiremock::MockServer;

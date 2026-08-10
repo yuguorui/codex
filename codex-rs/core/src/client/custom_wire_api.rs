@@ -41,7 +41,8 @@ pub(super) async fn stream_chat_api(
         let client_setup = session.client.current_client_setup().await?;
         let transport = session
             .client
-            .build_api_transport(&client_setup.api_provider, CHAT_COMPLETIONS_ENDPOINT)?;
+            .build_api_transport(&client_setup.api_provider, CHAT_COMPLETIONS_ENDPOINT)
+            .await?;
         let request_auth_context = AuthRequestTelemetryContext::new(
             client_setup.auth.as_ref().map(CodexAuth::auth_mode),
             client_setup.api_auth.as_ref(),
@@ -167,7 +168,8 @@ pub(super) async fn stream_anthropic_api(
         let client_setup = session.client.current_client_setup().await?;
         let transport = session
             .client
-            .build_api_transport(&client_setup.api_provider, ANTHROPIC_MESSAGES_ENDPOINT)?;
+            .build_api_transport(&client_setup.api_provider, ANTHROPIC_MESSAGES_ENDPOINT)
+            .await?;
         let request_auth_context = AuthRequestTelemetryContext::new(
             client_setup.auth.as_ref().map(CodexAuth::auth_mode),
             client_setup.api_auth.as_ref(),
