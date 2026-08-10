@@ -1,0 +1,16 @@
+---
+source: tui/src/chatwidget/workflows_tests.rs
+expression: "render_view_with_height(agent_detail_params_for(WorkflowStatus::Completed, 2),\n22)"
+---
+
+  verified
+  completed · Phase 2: Verify · agent 00000000
+
+› 1. ↗ Open transcript  Agent conversation
+     Runtime            gpt-5 · shared workspace · attempt 1
+     Usage              1.2K tokens · 2 tools · 1.00s
+     Timing             queued 2024-08-30 06:40:20 UTC · started 2024-08-30 06:40:21
+                        UTC · updated 2024-08-30 06:40:25 UTC
+     Prompt             Inspect subsystem 2 and report concrete findings with file
+                        references.
+     Result             Verified the candidate against its callers and tests

@@ -1,0 +1,7 @@
+---
+source: tui/src/chatwidget/workflows_tests.rs
+assertion_line: 75
+expression: visible_text(&lines)
+---
+• Review changes  running  7 agents  12.5K tok
+  … 2 more workflows

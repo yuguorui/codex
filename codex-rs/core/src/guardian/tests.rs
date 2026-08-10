@@ -949,9 +949,15 @@ fn collect_guardian_transcript_entries(
     history: &dyn codex_guardian_context::SectionHistory,
     node_repl_result_token_limit: usize,
 ) -> Vec<ConversationTranscriptEntry> {
-    prompt::collect_guardian_context(history, node_repl_result_token_limit, &[], &[])
-        .expect("collect Guardian context")
-        .transcript
+    prompt::collect_guardian_context(
+        history,
+        /*excluded_call_id*/ None,
+        node_repl_result_token_limit,
+        &[],
+        &[],
+    )
+    .expect("collect Guardian context")
+    .transcript
 }
 
 #[test]
