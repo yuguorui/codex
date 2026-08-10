@@ -1,0 +1,57 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "definitions": {
+    "LegacyAppPathString": {
+      "type": "string"
+    }
+  },
+  "properties": {
+    "runId": {
+      "type": "string"
+    },
+    "scriptPath": {
+      "$ref": "#/definitions/LegacyAppPathString"
+    },
+    "startedAt": {
+      "format": "int64",
+      "type": "integer"
+    },
+    "summary": {
+      "type": "string"
+    },
+    "taskId": {
+      "type": "string"
+    },
+    "threadId": {
+      "type": "string"
+    },
+    "title": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "transcriptDir": {
+      "$ref": "#/definitions/LegacyAppPathString"
+    },
+    "turnId": {
+      "type": "string"
+    },
+    "workflowName": {
+      "type": "string"
+    }
+  },
+  "required": [
+    "runId",
+    "scriptPath",
+    "startedAt",
+    "summary",
+    "taskId",
+    "threadId",
+    "transcriptDir",
+    "turnId",
+    "workflowName"
+  ],
+  "title": "WorkflowStartedNotification",
+  "type": "object"
+}
