@@ -42,9 +42,11 @@ async fn handle_close_agent(
     let arguments = function_arguments(payload)?;
     let args: CloseAgentArgs = parse_arguments(&arguments)?;
     let agent_id = parse_agent_id_target(&args.target)?;
-    let receiver_agent = session.services.agent_control.get_agent_metadata(agent_id);
-    let known_agent = receiver_agent.is_some();
-    let receiver_agent = receiver_agent.unwrap_or_default();
+    let receiver_agent = session
+        .services
+        .agent_control
+        .authorize_agent_access(session.thread_id, agent_id)
+        .map_err(|err| collab_agent_error(agent_id, err))?;
     session
         .emit_turn_item_started(
             &turn,
@@ -69,9 +71,7 @@ async fn handle_close_agent(
         .await
     {
         Ok(mut status_rx) => status_rx.borrow_and_update().clone(),
-        Err(err)
-            if known_agent && matches!(err.details(), CodexErrorDetails::ThreadNotFound(_)) =>
-        {
+        Err(err) if matches!(err.details(), CodexErrorDetails::ThreadNotFound(_)) => {
             session.services.agent_control.get_status(agent_id).await
         }
         Err(err) => {
@@ -100,17 +100,27 @@ async fn handle_close_agent(
             return Err(collab_agent_error(agent_id, err));
         }
     };
-    let result = Box::pin(session.services.agent_control.close_agent(agent_id))
-        .await
-        .map_err(|err| collab_agent_error(agent_id, err))
-        .map(|_| ());
+    let result = Box::pin(
+        session
+            .services
+            .agent_control
+            .close_agent(session.thread_id, agent_id),
+    )
+    .await
+    .map_err(|err| collab_agent_error(agent_id, err))
+    .map(|_| ());
+    let tool_status = if result.is_ok() {
+        CollabAgentToolCallStatus::Completed
+    } else {
+        CollabAgentToolCallStatus::Failed
+    };
     session
         .emit_turn_item_completed(
             &turn,
             TurnItem::CollabAgentToolCall(CollabAgentToolCallItem {
                 id: call_id,
                 tool: CollabAgentTool::CloseAgent,
-                status: collab_tool_call_status(&status, Some(agent_id)),
+                status: tool_status,
                 sender_thread_id: session.thread_id,
                 receiver_thread_ids: vec![agent_id],
                 receiver_agents: vec![CollabAgentRef {

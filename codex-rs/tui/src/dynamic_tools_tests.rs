@@ -309,7 +309,10 @@ fn activity_metadata_is_retained_without_including_outputs() -> color_eyre::Resu
                 "revisedPrompt": "a cat", "result": "image bytes"},
             {"type": "enteredReviewMode", "id": "review-1", "review": "review changes"},
             {"type": "functionCallOutput", "id": "delegation-1", "name": "send_message_to_thread",
-                "namespace": "codex_tui", "output": delegated_prompt("source-2", "Follow <up> & report")}
+                "namespace": "codex_tui", "output": delegated_prompt("source-2", "Follow <up> & report")},
+            {"type": "workflowInputAnalysis", "id": "workflow-input-1"},
+            {"type": "workflowResultRead", "id": "workflow-result-1", "runId": "wf_test",
+                "status": "completed"}
         ]
     }))?;
 
@@ -337,7 +340,10 @@ fn activity_metadata_is_retained_without_including_outputs() -> color_eyre::Resu
             {"type": "functionCallOutput", "id": "delegation-1", "name": "send_message_to_thread",
                 "namespace": "codex_tui", "codexDelegation": {
                     "sourceThreadId": "source-2", "input": "Follow <up> & report"
-                }}
+                }},
+            {"type": "workflowInputAnalysis", "id": "workflow-input-1"},
+            {"type": "workflowResultRead", "id": "workflow-result-1", "runId": "wf_test",
+                "status": "completed"}
         ])
     );
 

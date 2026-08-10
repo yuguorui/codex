@@ -33,6 +33,7 @@ use codex_tools::DiscoverablePluginInfo;
 use codex_tools::DiscoverableTool;
 use codex_tools::ResponsesApiNamespaceTool;
 use codex_tools::ResponsesApiTool;
+use codex_tools::ToolAvailability;
 use codex_tools::ToolCall as ExtensionToolCall;
 use codex_tools::ToolExecutor;
 use codex_tools::ToolExposure;
@@ -397,6 +398,40 @@ impl<'call> ToolExecutor<ExtensionToolCall<'call>> for DeferredExtensionTool {
     where
         'call: 'a,
     {
+        Box::pin(async { panic!("spec planning should not execute extension tools") })
+    }
+}
+
+struct RootSessionOnlyExtensionTool {
+    name: &'static str,
+    exposure: ToolExposure,
+}
+
+impl ToolExecutor<ExtensionToolCall> for RootSessionOnlyExtensionTool {
+    fn tool_name(&self) -> ToolName {
+        ToolName::plain(self.name)
+    }
+
+    fn spec(&self) -> ToolSpec {
+        ToolSpec::Function(ResponsesApiTool {
+            name: self.name.to_string(),
+            description: "Root-session-only test tool.".to_string(),
+            strict: true,
+            defer_loading: None,
+            parameters: codex_tools::JsonSchema::default(),
+            output_schema: None,
+        })
+    }
+
+    fn exposure(&self) -> ToolExposure {
+        self.exposure
+    }
+
+    fn availability(&self) -> ToolAvailability {
+        ToolAvailability::RootSessionOnly
+    }
+
+    fn handle(&self, _call: ExtensionToolCall) -> codex_tools::ToolExecutorFuture<'_> {
         Box::pin(async { panic!("spec planning should not execute extension tools") })
     }
 }
@@ -2172,6 +2207,43 @@ async fn deferred_extension_tools_are_discoverable_with_tool_search() {
     plan.assert_visible_lacks(&["extension_echo"]);
     plan.assert_registered_contains(&["extension_echo"]);
     assert_eq!(plan.exposure("extension_echo"), ToolExposure::Deferred);
+}
+
+#[tokio::test]
+async fn root_session_only_extension_tools_are_not_registered_for_subagents() {
+    let make_inputs = || ToolPlanInputs {
+        extension_tool_executors: vec![
+            Arc::new(RootSessionOnlyExtensionTool {
+                name: "owner_direct",
+                exposure: ToolExposure::Direct,
+            }),
+            Arc::new(RootSessionOnlyExtensionTool {
+                name: "owner_hidden_alias",
+                exposure: ToolExposure::Hidden,
+            }),
+        ],
+        ..ToolPlanInputs::default()
+    };
+    let root_plan = probe_with(|_| {}, make_inputs()).await;
+    root_plan.assert_visible_contains(&["owner_direct"]);
+    root_plan.assert_visible_lacks(&["owner_hidden_alias"]);
+    root_plan.assert_registered_contains(&["owner_direct", "owner_hidden_alias"]);
+
+    let subagent_plan = probe_with(
+        |turn| {
+            turn.session_source = SessionSource::SubAgent(SubAgentSource::ThreadSpawn {
+                parent_thread_id: ThreadId::new(),
+                depth: 1,
+                agent_path: None,
+                agent_nickname: None,
+                agent_role: None,
+            });
+        },
+        make_inputs(),
+    )
+    .await;
+    subagent_plan.assert_visible_lacks(&["owner_direct", "owner_hidden_alias"]);
+    subagent_plan.assert_registered_lacks(&["owner_direct", "owner_hidden_alias"]);
 }
 
 #[tokio::test]

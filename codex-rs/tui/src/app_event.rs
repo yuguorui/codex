@@ -704,6 +704,37 @@ pub(crate) enum AppEvent {
         cwd: PathBuf,
     },
 
+    /// Fetch and open dynamic workflows for the active thread.
+    OpenWorkflows,
+
+    /// Open one workflow run from the cached workflow list.
+    OpenWorkflowDetail {
+        run_id: String,
+    },
+
+    /// Open live details and controls for one workflow agent.
+    OpenWorkflowAgentDetail {
+        run_id: String,
+        agent_index: usize,
+    },
+
+    /// Stop a running workflow.
+    StopWorkflow {
+        run_id: String,
+    },
+
+    /// Skip one running workflow agent.
+    SkipWorkflowAgent {
+        run_id: String,
+        agent_index: usize,
+    },
+
+    /// Retry one failed or skipped workflow agent.
+    RetryWorkflowAgent {
+        run_id: String,
+        agent_index: usize,
+    },
+
     /// Result of fetching plugin marketplace state.
     PluginsLoaded {
         cwd: PathBuf,

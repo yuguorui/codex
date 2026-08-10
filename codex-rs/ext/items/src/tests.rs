@@ -7,6 +7,68 @@ use super::image_generation::ImageGenerationItem;
 use super::sleep::SleepItem;
 use super::web_search::WebSearchAction;
 use super::web_search::WebSearchItem;
+use super::workflow::WorkflowInputAnalysisItem;
+use super::workflow::WorkflowResultReadItem;
+use super::workflow::WorkflowResultReadStatus;
+
+#[test]
+fn workflow_activity_items_preserve_focused_wire_shapes() {
+    let items = [
+        ExtensionItem::WorkflowInputAnalysis(WorkflowInputAnalysisItem {
+            id: "analyze-1".to_string(),
+        }),
+        ExtensionItem::WorkflowResultRead(WorkflowResultReadItem {
+            id: "read-1".to_string(),
+            run_id: Some("wf_123".to_string()),
+            status: WorkflowResultReadStatus::InProgress,
+        }),
+    ];
+
+    assert_eq!(
+        items.map(|item| serde_json::to_value(item).unwrap()),
+        [
+            json!({"kind": "workflow.input_analysis", "id": "analyze-1"}),
+            json!({
+                "kind": "workflow.result_read",
+                "id": "read-1",
+                "runId": "wf_123",
+                "status": "inProgress",
+            }),
+        ]
+    );
+}
+
+#[test]
+fn workflow_result_read_item_preserves_terminal_states() {
+    let items = [
+        WorkflowResultReadItem {
+            id: "read-completed".to_string(),
+            run_id: Some("wf_completed".to_string()),
+            status: WorkflowResultReadStatus::Completed,
+        },
+        WorkflowResultReadItem {
+            id: "read-failed".to_string(),
+            run_id: None,
+            status: WorkflowResultReadStatus::Failed,
+        },
+    ];
+
+    assert_eq!(
+        items.map(|item| serde_json::to_value(item).unwrap()),
+        [
+            json!({
+                "id": "read-completed",
+                "runId": "wf_completed",
+                "status": "completed",
+            }),
+            json!({
+                "id": "read-failed",
+                "runId": null,
+                "status": "failed",
+            }),
+        ]
+    );
+}
 
 fn completed_image_generation_item() -> ExtensionItem {
     ExtensionItem::ImageGeneration(ImageGenerationItem {
