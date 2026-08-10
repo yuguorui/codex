@@ -131,6 +131,7 @@ fn spawn_cell_actor_harness_with_host_and_failure_handler<H: CellHost>(
         runtime_event_tx,
         PendingRuntimeMode::PauseUntilResumed,
         /*task_failure_handler*/ None,
+        crate::StringCodeGeneration::Allow,
     )
     .unwrap();
     let (runtime_control_tx, runtime_control_rx) = std_mpsc::channel();
