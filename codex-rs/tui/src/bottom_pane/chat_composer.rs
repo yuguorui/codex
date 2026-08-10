@@ -283,6 +283,7 @@ mod footer_state;
 mod history_search;
 mod popup_state;
 mod slash_input;
+mod workflow_keyword;
 
 use self::attachment_state::AttachmentState;
 use self::draft_state::ComposerMentionBinding;
@@ -295,6 +296,8 @@ use self::popup_state::PopupState;
 use self::slash_input::SlashInput;
 use self::slash_input::SlashValidation;
 use self::slash_input::SubmissionValidation;
+use self::workflow_keyword::WORKFLOW_KEYWORD_FRAME_TICK;
+use self::workflow_keyword::workflow_keyword_highlights;
 use crate::app_event::AppEvent;
 use crate::app_event::ConnectorsSnapshot;
 use crate::app_event_sender::AppEventSender;
@@ -444,6 +447,8 @@ pub(crate) struct ChatComposerConfig {
     pub(crate) slash_commands_enabled: bool,
     /// Whether pasting a file path can attach local images.
     pub(crate) image_paste_enabled: bool,
+    /// Whether time-varying composer effects should request animation frames.
+    pub(crate) animations_enabled: bool,
 }
 
 impl Default for ChatComposerConfig {
@@ -452,6 +457,7 @@ impl Default for ChatComposerConfig {
             popups_enabled: true,
             slash_commands_enabled: true,
             image_paste_enabled: true,
+            animations_enabled: true,
         }
     }
 }
@@ -466,6 +472,7 @@ impl ChatComposerConfig {
             popups_enabled: false,
             slash_commands_enabled: false,
             image_paste_enabled: false,
+            animations_enabled: false,
         }
     }
 }
@@ -505,6 +512,7 @@ pub(crate) struct ChatComposer {
     service_tier_commands: Vec<ServiceTierCommand>,
     mentions_v2_enabled: bool,
     goal_command_enabled: bool,
+    workflow_command_enabled: bool,
     personality_command_enabled: bool,
     windows_degraded_sandbox_active: bool,
     side_conversation_active: bool,
@@ -582,6 +590,7 @@ impl ChatComposer {
             token_activity_command_enabled: self.token_activity_command_enabled,
             service_tier_commands_enabled: self.service_tier_commands_enabled,
             goal_command_enabled: self.goal_command_enabled,
+            workflow_command_enabled: self.workflow_command_enabled,
             personality_command_enabled: self.personality_command_enabled,
             allow_elevate_sandbox: self.windows_degraded_sandbox_active,
             side_conversation_active: self.side_conversation_active,
@@ -691,6 +700,7 @@ impl ChatComposer {
             service_tier_commands: Vec::new(),
             mentions_v2_enabled: false,
             goal_command_enabled: false,
+            workflow_command_enabled: false,
             personality_command_enabled: false,
             windows_degraded_sandbox_active: false,
             side_conversation_active: false,
@@ -852,6 +862,10 @@ impl ChatComposer {
 
     pub fn set_goal_command_enabled(&mut self, enabled: bool) {
         self.goal_command_enabled = enabled;
+    }
+
+    pub fn set_workflow_command_enabled(&mut self, enabled: bool) {
+        self.workflow_command_enabled = enabled;
     }
 
     /// Replace composer, editor, and footer-hint key bindings from one runtime snapshot.
@@ -4823,6 +4837,19 @@ impl ChatComposer {
                     .render_ref_masked(textarea_rect, buf, &mut state, mask_char);
             } else {
                 let mut highlights = self.plugin_at_mention_highlights();
+                if self.workflow_command_enabled {
+                    let workflow_highlights = workflow_keyword_highlights(
+                        self.draft.textarea.text(),
+                        self.config.animations_enabled,
+                    );
+                    if !workflow_highlights.is_empty()
+                        && self.config.animations_enabled
+                        && let Some(frame_requester) = &self.frame_requester
+                    {
+                        frame_requester.schedule_frame_in(WORKFLOW_KEYWORD_FRAME_TICK);
+                    }
+                    highlights.extend(workflow_highlights);
+                }
                 let search_highlight_style =
                     Style::default().add_modifier(Modifier::REVERSED | Modifier::BOLD);
                 highlights.extend(
@@ -4890,6 +4917,10 @@ impl ChatComposer {
 #[cfg(test)]
 #[path = "chat_composer_effort_tests.rs"]
 mod effort_tests;
+
+#[cfg(test)]
+#[path = "chat_composer/workflow_keyword_tests.rs"]
+mod workflow_keyword_tests;
 
 #[cfg(test)]
 mod tests {

@@ -59,6 +59,23 @@ impl FeatureConfig for CodeModeHostConfigToml {
 
 #[derive(Serialize, Deserialize, Debug, Clone, Default, PartialEq, Eq, JsonSchema)]
 #[serde(deny_unknown_fields)]
+pub struct WorkflowConfigToml {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub enabled: Option<bool>,
+    /// Maximum number of child V8 workflow sessions created by one workflow run.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[schemars(range(min = 1, max = 64))]
+    pub max_child_sessions: Option<usize>,
+}
+
+impl FeatureConfig for WorkflowConfigToml {
+    fn enabled(&self) -> Option<bool> {
+        self.enabled
+    }
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, Default, PartialEq, Eq, JsonSchema)]
+#[serde(deny_unknown_fields)]
 pub struct NonPrefixedMcpToolNamesConfigToml {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub enabled: Option<bool>,

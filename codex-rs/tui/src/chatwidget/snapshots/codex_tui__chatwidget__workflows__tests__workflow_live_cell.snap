@@ -1,0 +1,15 @@
+---
+source: tui/src/chatwidget/workflows_tests.rs
+expression: visible_text(&lines)
+---
+• Workflow Review changes  running
+  Check candidate findings
+  Phase 2: Verify
+  ○ queued  1.2K tok  2 tools
+  • finder  1.2K tok  2 tools
+  ✓ verified  1.2K tok  2 tools
+  ✗ failed  1.2K tok  2 tools
+  ! blocked  1.2K tok  2 tools
+  − skipped  1.2K tok  2 tools
+  ✓ cached  1.2K tok  2 tools
+  7 agents · 12.5K tokens · 19 tools
