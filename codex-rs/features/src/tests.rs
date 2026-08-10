@@ -673,6 +673,17 @@ multi_agent_v2 = true
 }
 
 #[test]
+fn workflow_feature_deserializes_as_boolean_toggle() {
+    let features: FeaturesToml =
+        toml::from_str("workflows = true").expect("workflow feature should deserialize");
+
+    assert_eq!(
+        features.entries(),
+        BTreeMap::from([("workflows".to_string(), true)])
+    );
+}
+
+#[test]
 fn multi_agent_v2_feature_config_deserializes_table() {
     let features: FeaturesToml = toml::from_str(
         r#"

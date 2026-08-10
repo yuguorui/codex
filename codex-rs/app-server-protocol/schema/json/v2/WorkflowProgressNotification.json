@@ -1,0 +1,349 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "definitions": {
+    "WorkflowAgentActivity": {
+      "enum": [
+        "analyzing_inputs"
+      ],
+      "type": "string"
+    },
+    "WorkflowAgentState": {
+      "enum": [
+        "queued",
+        "start",
+        "done",
+        "error"
+      ],
+      "type": "string"
+    },
+    "WorkflowIsolation": {
+      "enum": [
+        "worktree",
+        "remote"
+      ],
+      "type": "string"
+    },
+    "WorkflowProgressItem": {
+      "oneOf": [
+        {
+          "properties": {
+            "index": {
+              "format": "uint",
+              "minimum": 0.0,
+              "type": "integer"
+            },
+            "kind": {
+              "$ref": "#/definitions/WorkflowProgressKind"
+            },
+            "title": {
+              "type": "string"
+            },
+            "type": {
+              "enum": [
+                "workflowPhase"
+              ],
+              "title": "WorkflowPhaseWorkflowProgressItemType",
+              "type": "string"
+            }
+          },
+          "required": [
+            "index",
+            "kind",
+            "title",
+            "type"
+          ],
+          "title": "WorkflowPhaseWorkflowProgressItem",
+          "type": "object"
+        },
+        {
+          "properties": {
+            "activity": {
+              "anyOf": [
+                {
+                  "$ref": "#/definitions/WorkflowAgentActivity"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "agentId": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "attempt": {
+              "format": "uint32",
+              "minimum": 0.0,
+              "type": "integer"
+            },
+            "awaitingDecision": {
+              "default": false,
+              "description": "True while the workflow waits for the user to retry or skip this agent.",
+              "type": "boolean"
+            },
+            "blocked": {
+              "type": "boolean"
+            },
+            "cached": {
+              "type": "boolean"
+            },
+            "durationMs": {
+              "format": "uint64",
+              "minimum": 0.0,
+              "type": [
+                "integer",
+                "null"
+              ]
+            },
+            "error": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "fallbackModel": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "index": {
+              "format": "uint",
+              "minimum": 0.0,
+              "type": "integer"
+            },
+            "invocationId": {
+              "description": "Stable invocation identity within one workflow definition.",
+              "type": "string"
+            },
+            "isolation": {
+              "anyOf": [
+                {
+                  "$ref": "#/definitions/WorkflowIsolation"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "label": {
+              "type": "string"
+            },
+            "lastProgressAt": {
+              "description": "Unix timestamp in seconds when this progress item was last updated.",
+              "format": "uint64",
+              "minimum": 0.0,
+              "type": "integer"
+            },
+            "model": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "phaseIndex": {
+              "format": "uint",
+              "minimum": 0.0,
+              "type": [
+                "integer",
+                "null"
+              ]
+            },
+            "phaseTitle": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "promptPreview": {
+              "type": "string"
+            },
+            "queuedAt": {
+              "description": "Unix timestamp in seconds when the call entered the workflow queue.",
+              "format": "uint64",
+              "minimum": 0.0,
+              "type": "integer"
+            },
+            "resultPreview": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "skipped": {
+              "type": "boolean"
+            },
+            "startedAt": {
+              "description": "Unix timestamp in seconds when agent execution began.",
+              "format": "uint64",
+              "minimum": 0.0,
+              "type": [
+                "integer",
+                "null"
+              ]
+            },
+            "state": {
+              "$ref": "#/definitions/WorkflowAgentState"
+            },
+            "tokens": {
+              "format": "uint64",
+              "minimum": 0.0,
+              "type": [
+                "integer",
+                "null"
+              ]
+            },
+            "toolCalls": {
+              "format": "uint64",
+              "minimum": 0.0,
+              "type": [
+                "integer",
+                "null"
+              ]
+            },
+            "type": {
+              "enum": [
+                "workflowAgent"
+              ],
+              "title": "WorkflowAgentWorkflowProgressItemType",
+              "type": "string"
+            }
+          },
+          "required": [
+            "attempt",
+            "blocked",
+            "cached",
+            "index",
+            "invocationId",
+            "label",
+            "lastProgressAt",
+            "promptPreview",
+            "queuedAt",
+            "skipped",
+            "state",
+            "type"
+          ],
+          "title": "WorkflowAgentWorkflowProgressItem",
+          "type": "object"
+        },
+        {
+          "properties": {
+            "message": {
+              "type": "string"
+            },
+            "type": {
+              "enum": [
+                "workflowLog"
+              ],
+              "title": "WorkflowLogWorkflowProgressItemType",
+              "type": "string"
+            }
+          },
+          "required": [
+            "message",
+            "type"
+          ],
+          "title": "WorkflowLogWorkflowProgressItem",
+          "type": "object"
+        }
+      ]
+    },
+    "WorkflowProgressKind": {
+      "enum": [
+        "declared",
+        "active"
+      ],
+      "type": "string"
+    },
+    "WorkflowUsage": {
+      "properties": {
+        "agentCount": {
+          "format": "uint",
+          "minimum": 0.0,
+          "type": "integer"
+        },
+        "durationMs": {
+          "format": "uint64",
+          "minimum": 0.0,
+          "type": "integer"
+        },
+        "failedAgentCount": {
+          "default": 0,
+          "format": "uint",
+          "minimum": 0.0,
+          "type": "integer"
+        },
+        "nullAgentResultCount": {
+          "default": 0,
+          "format": "uint",
+          "minimum": 0.0,
+          "type": "integer"
+        },
+        "skippedAgentCount": {
+          "default": 0,
+          "format": "uint",
+          "minimum": 0.0,
+          "type": "integer"
+        },
+        "successfulAgentCount": {
+          "default": 0,
+          "format": "uint",
+          "minimum": 0.0,
+          "type": "integer"
+        },
+        "toolUses": {
+          "format": "uint64",
+          "minimum": 0.0,
+          "type": "integer"
+        },
+        "totalTokens": {
+          "format": "uint64",
+          "minimum": 0.0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "agentCount",
+        "durationMs",
+        "toolUses",
+        "totalTokens"
+      ],
+      "type": "object"
+    }
+  },
+  "properties": {
+    "progress": {
+      "items": {
+        "$ref": "#/definitions/WorkflowProgressItem"
+      },
+      "type": "array"
+    },
+    "runId": {
+      "type": "string"
+    },
+    "taskId": {
+      "type": "string"
+    },
+    "threadId": {
+      "type": "string"
+    },
+    "turnId": {
+      "type": "string"
+    },
+    "usage": {
+      "$ref": "#/definitions/WorkflowUsage"
+    }
+  },
+  "required": [
+    "progress",
+    "runId",
+    "taskId",
+    "threadId",
+    "turnId",
+    "usage"
+  ],
+  "title": "WorkflowProgressNotification",
+  "type": "object"
+}
