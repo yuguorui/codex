@@ -325,6 +325,63 @@ async fn apply_role_preserves_existing_service_tier_without_override() {
 }
 
 #[tokio::test]
+async fn frozen_role_uses_approved_layer_after_source_file_changes() {
+    let (home, mut config) = test_config_with_cli_overrides(Vec::new()).await;
+    let role_path = write_role_config(
+        &home,
+        "frozen-role.toml",
+        "model = \"approved-model\"\ndeveloper_instructions = \"approved instructions\"",
+    )
+    .await;
+    config.agent_roles.insert(
+        "custom".to_string(),
+        AgentRoleConfig {
+            description: Some("Frozen role".to_string()),
+            config_file: Some(role_path.clone()),
+            nickname_candidates: None,
+        },
+    );
+    let frozen = freeze_agent_roles(&config)
+        .await
+        .expect("role should freeze before approval");
+    tokio::fs::write(
+        role_path,
+        "model = \"changed-model\"\ndeveloper_instructions = \"changed instructions\"",
+    )
+    .await
+    .expect("change role source after approval");
+
+    apply_frozen_agent_role_to_config(&mut config, &frozen, Some("custom"))
+        .await
+        .expect("frozen role should apply without rereading its file");
+
+    assert_eq!(config.model.as_deref(), Some("approved-model"));
+    assert_eq!(
+        config.developer_instructions.as_deref(),
+        Some("approved instructions")
+    );
+    let approval = frozen.approval_value().to_string();
+    assert!(!approval.contains("approved-model"));
+    assert!(!approval.contains("approved instructions"));
+    assert!(!approval.contains("changed-model"));
+    let approval = frozen.approval_value();
+    let custom = approval
+        .as_array()
+        .expect("roles should be an array")
+        .iter()
+        .find(|role| role["name"] == "custom")
+        .expect("custom role summary");
+    assert_eq!(custom["hasConfigLayer"], true);
+    assert_eq!(
+        custom["configLayerSha256"]
+            .as_str()
+            .expect("role layer hash")
+            .len(),
+        64
+    );
+}
+
+#[tokio::test]
 #[cfg(not(windows))]
 async fn apply_role_does_not_materialize_default_sandbox_workspace_write_fields() {
     use codex_protocol::protocol::SandboxPolicy;

@@ -11,6 +11,7 @@ use ts_rs::TS;
 pub mod image_generation;
 pub mod sleep;
 pub mod web_search;
+pub mod workflow;
 
 /// Canonical extension-owned turn item carried through core lifecycle events.
 ///
@@ -42,6 +43,12 @@ pub enum ExtensionItem {
     #[serde(rename = "web.search")]
     #[ts(rename = "web.search")]
     WebSearch(web_search::WebSearchItem),
+    #[serde(rename = "workflow.input_analysis")]
+    #[ts(rename = "workflow.input_analysis")]
+    WorkflowInputAnalysis(workflow::WorkflowInputAnalysisItem),
+    #[serde(rename = "workflow.result_read")]
+    #[ts(rename = "workflow.result_read")]
+    WorkflowResultRead(workflow::WorkflowResultReadItem),
 }
 
 impl ExtensionItem {
@@ -52,7 +59,13 @@ impl ExtensionItem {
             Self::ImageGeneration(item) => &item.id,
             Self::Sleep(item) => &item.id,
             Self::WebSearch(item) => &item.id,
+            Self::WorkflowInputAnalysis(item) => &item.id,
+            Self::WorkflowResultRead(item) => &item.id,
         }
+    }
+
+    pub fn is_workflow_input_analysis(&self) -> bool {
+        matches!(self, Self::WorkflowInputAnalysis(_))
     }
 }
 

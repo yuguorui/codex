@@ -9,6 +9,8 @@ use serde::Deserialize;
 use serde_json::Value;
 
 use crate::compact::content_items_to_text;
+use crate::context::ContextualUserFragment;
+use crate::context::GuardianExtensionApproval;
 use crate::context::NodeReplReviewEvidence;
 use crate::context::NodeReplReviewEvidenceMode;
 use crate::context::node_repl_review_evidence_mode;
@@ -36,7 +38,6 @@ use super::TRUNCATION_TAG;
 use super::approval_request::format_guardian_action_pretty;
 
 const GUARDIAN_MAX_APPROVAL_REASON_TOKENS: usize = 512;
-
 /// Transcript entry retained for guardian review after filtering.
 #[derive(Debug, PartialEq, Eq)]
 pub(crate) struct GuardianTranscriptEntry {
@@ -139,12 +140,19 @@ pub(crate) async fn build_guardian_prompt_items_with_parent_turn(
         GUARDIAN_MAX_TOOL_ENTRY_TOKENS
     };
     let history = session.clone_history().await;
-    let transcript_entries = collect_guardian_transcript_entries(history.raw_items());
+    let excluded_call_id = match &request {
+        GuardianApprovalRequest::ExtensionTool { id, .. } => Some(id.as_str()),
+        _ => None,
+    };
+    let transcript_entries =
+        collect_guardian_transcript_entries_excluding_call(history.raw_items(), excluded_call_id);
     let transcript_cursor = GuardianTranscriptCursor {
         parent_history_version: history.history_version(),
         transcript_entry_count: transcript_entries.len(),
     };
     let planned_action_json = format_guardian_action_pretty(&request)?;
+    let render_planned_action_json =
+        !matches!(&request, GuardianApprovalRequest::ExtensionTool { .. });
 
     let prompt_shape = match mode {
         GuardianPromptMode::Full => GuardianPromptShape::Full,
@@ -315,6 +323,34 @@ pub(crate) async fn build_guardian_prompt_items_with_parent_turn(
             );
             push_text("Node REPL action JSON:\n".to_string());
         }
+        GuardianApprovalRequest::ExtensionTool {
+            tool_name,
+            artifact,
+            ..
+        } => {
+            push_text(headings.action_intro.to_string());
+            push_text(">>> APPROVAL REQUEST START\n".to_string());
+            if let Some(reason) = reasons.retry.or(reasons.approval) {
+                let reason = truncate_text(
+                    &reason,
+                    TruncationPolicy::Tokens(GUARDIAN_MAX_APPROVAL_REASON_TOKENS),
+                );
+                push_text("Retry reason:\n".to_string());
+                push_text(format!("{reason}\n\n"));
+            }
+            push_text(
+                "Review the complete content-addressed extension action with `read_guardian_approval_artifact`. Continue reading from each returned offset until the artifact is complete, then assess that exact action.\n"
+                    .to_string(),
+            );
+            push_text(
+                GuardianExtensionApproval::new(
+                    tool_name,
+                    artifact.sha256(),
+                    artifact.byte_length(),
+                )
+                .render(),
+            );
+        }
         _ => {
             push_text(headings.action_intro.to_string());
             push_text(">>> APPROVAL REQUEST START\n".to_string());
@@ -333,7 +369,9 @@ pub(crate) async fn build_guardian_prompt_items_with_parent_turn(
             push_text("Planned action JSON:\n".to_string());
         }
     }
-    push_text(format!("{}\n", planned_action_json.text));
+    if render_planned_action_json {
+        push_text(format!("{}\n", planned_action_json.text));
+    }
     push_text(">>> APPROVAL REQUEST END\n".to_string());
     Ok(GuardianPromptItems {
         items,
@@ -533,8 +571,16 @@ fn render_guardian_transcript_entries_with_offset(
 /// Keep both tool calls and tool results here. The reviewer often needs the
 /// agent's exact queried path / arguments as well as the returned evidence to
 /// decide whether the pending approval is justified.
+#[cfg(test)]
 pub(crate) fn collect_guardian_transcript_entries<'a>(
     items: impl IntoIterator<Item = &'a ResponseItem>,
+) -> Vec<GuardianTranscriptEntry> {
+    collect_guardian_transcript_entries_excluding_call(items, None)
+}
+
+pub(crate) fn collect_guardian_transcript_entries_excluding_call<'a>(
+    items: impl IntoIterator<Item = &'a ResponseItem>,
+    excluded_call_id: Option<&str>,
 ) -> Vec<GuardianTranscriptEntry> {
     let mut entries = Vec::new();
     let mut tool_names_by_call_id = HashMap::new();
@@ -587,6 +633,9 @@ pub(crate) fn collect_guardian_transcript_entries<'a>(
                 arguments,
                 ..
             } => {
+                if excluded_call_id == Some(call_id.as_str()) {
+                    continue;
+                }
                 tool_names_by_call_id
                     .insert(call_id.as_str(), (name.as_str(), namespace.as_deref()));
                 (!arguments.trim().is_empty()).then(|| GuardianTranscriptEntry {
@@ -601,6 +650,9 @@ pub(crate) fn collect_guardian_transcript_entries<'a>(
                 input,
                 ..
             } => {
+                if excluded_call_id == Some(call_id.as_str()) {
+                    continue;
+                }
                 tool_names_by_call_id
                     .insert(call_id.as_str(), (name.as_str(), namespace.as_deref()));
                 (!input.trim().is_empty()).then(|| GuardianTranscriptEntry {
@@ -619,29 +671,34 @@ pub(crate) fn collect_guardian_transcript_entries<'a>(
             }
             | ResponseItem::CustomToolCallOutput {
                 call_id, output, ..
-            } => output.body.to_text().and_then(|text| {
-                let kind = match tool_names_by_call_id.get(call_id.as_str()) {
-                    Some((name, namespace))
-                        if matches!(
-                            namespace,
-                            Some(
-                                "mcp__node_repl" | "mcp__node_repl__" | "node_repl" | "node_repl__"
-                            )
-                        ) || namespace.is_none()
-                            && (name.starts_with("mcp__node_repl__")
-                                || name.starts_with("node_repl__")) =>
-                    {
-                        GuardianTranscriptEntryKind::NodeReplToolResult(format!(
-                            "tool {name} result"
-                        ))
-                    }
-                    Some((name, _)) => {
-                        GuardianTranscriptEntryKind::Tool(format!("tool {name} result"))
-                    }
-                    None => GuardianTranscriptEntryKind::Tool("tool result".to_string()),
-                };
-                non_empty_entry(kind, text)
-            }),
+            } if excluded_call_id != Some(call_id.as_str()) => {
+                output.body.to_text().and_then(|text| {
+                    let kind = match tool_names_by_call_id.get(call_id.as_str()) {
+                        Some((name, namespace))
+                            if matches!(
+                                namespace,
+                                Some(
+                                    "mcp__node_repl"
+                                        | "mcp__node_repl__"
+                                        | "node_repl"
+                                        | "node_repl__"
+                                )
+                            ) || namespace.is_none()
+                                && (name.starts_with("mcp__node_repl__")
+                                    || name.starts_with("node_repl__")) =>
+                        {
+                            GuardianTranscriptEntryKind::NodeReplToolResult(format!(
+                                "tool {name} result"
+                            ))
+                        }
+                        Some((name, _)) => {
+                            GuardianTranscriptEntryKind::Tool(format!("tool {name} result"))
+                        }
+                        None => GuardianTranscriptEntryKind::Tool("tool result".to_string()),
+                    };
+                    non_empty_entry(kind, text)
+                })
+            }
             _ => None,
         };
 
