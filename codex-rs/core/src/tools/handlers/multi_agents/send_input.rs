@@ -47,8 +47,14 @@ impl Handler {
         let receiver_agent = session
             .services
             .agent_control
-            .get_agent_metadata(receiver_thread_id);
-        if receiver_agent.is_some() {
+            .authorize_agent_access(session.thread_id, receiver_thread_id)
+            .map_err(|err| collab_agent_error(receiver_thread_id, err))?;
+        if session
+            .services
+            .agent_control
+            .get_agent_metadata(receiver_thread_id)
+            .is_some()
+        {
             let resume_config =
                 build_agent_resume_config(turn.as_ref(), step_context.environments.primary())?;
             session
@@ -58,7 +64,6 @@ impl Handler {
                 .await
                 .map_err(|err| collab_agent_error(receiver_thread_id, err))?;
         }
-        let receiver_agent = receiver_agent.unwrap_or_default();
         if args.interrupt {
             session
                 .services

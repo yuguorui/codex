@@ -3,11 +3,13 @@ use codex_protocol::ThreadId;
 use codex_protocol::error::CodexErr;
 use codex_protocol::error::CodexErrorDetails;
 use codex_protocol::error::Result;
+use codex_protocol::protocol::AgentStatus;
 use codex_protocol::protocol::SessionSource;
 use codex_protocol::protocol::SubAgentSource;
 use rand::prelude::IndexedRandom;
 use std::collections::HashMap;
 use std::collections::HashSet;
+use std::collections::VecDeque;
 use std::collections::hash_map::Entry;
 use std::sync::Arc;
 use std::sync::Mutex;
@@ -30,16 +32,35 @@ pub(crate) struct AgentRegistry {
 struct ActiveAgents {
     agent_tree: HashMap<String, AgentMetadata>,
     thread_paths: HashMap<ThreadId, String>,
+    counted_agents: HashSet<ThreadId>,
+    closed_agents: HashMap<ThreadId, AgentRegistration>,
+    closed_agent_statuses: HashMap<ThreadId, AgentStatus>,
+    closed_agent_order: VecDeque<ThreadId>,
     used_agent_nicknames: HashSet<String>,
     nickname_reset_count: usize,
 }
 
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub(crate) struct AgentMetadata {
     pub(crate) agent_id: Option<ThreadId>,
+    pub(crate) owning_root_thread_id: Option<ThreadId>,
     pub(crate) agent_path: Option<AgentPath>,
     pub(crate) agent_nickname: Option<String>,
     pub(crate) agent_role: Option<String>,
+}
+
+const MAX_CLOSED_AGENT_TOMBSTONES: usize = 128;
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum AgentQuota {
+    Counted,
+    Unmetered,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct AgentRegistration {
+    pub(crate) metadata: AgentMetadata,
+    pub(crate) quota: AgentQuota,
 }
 
 fn format_agent_nickname(name: &str, nickname_reset_count: usize) -> String {
@@ -78,7 +99,7 @@ pub(crate) fn exceeds_thread_spawn_depth_limit(depth: i32, max_depth: i32) -> bo
 }
 
 impl AgentRegistry {
-    pub(crate) fn reserve_spawn_slot(
+    pub(crate) fn reserve_counted_spawn_slot(
         self: &Arc<Self>,
         max_threads: Option<usize>,
     ) -> Result<SpawnReservation> {
@@ -94,9 +115,28 @@ impl AgentRegistry {
         Ok(SpawnReservation {
             state: Arc::clone(self),
             active: true,
+            quota: AgentQuota::Counted,
             reserved_agent_nickname: None,
             reserved_agent_path: None,
         })
+    }
+
+    pub(crate) fn reserve_unmetered_spawn_slot(self: &Arc<Self>) -> SpawnReservation {
+        SpawnReservation {
+            state: Arc::clone(self),
+            active: true,
+            quota: AgentQuota::Unmetered,
+            reserved_agent_nickname: None,
+            reserved_agent_path: None,
+        }
+    }
+
+    #[cfg(test)]
+    fn reserve_spawn_slot(
+        self: &Arc<Self>,
+        max_threads: Option<usize>,
+    ) -> Result<SpawnReservation> {
+        self.reserve_counted_spawn_slot(max_threads)
     }
 
     pub(crate) fn release_spawned_thread(&self, thread_id: ThreadId) {
@@ -105,13 +145,12 @@ impl AgentRegistry {
                 .active_agents
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner);
-            active_agents
+            let removed = active_agents
                 .thread_paths
                 .remove(&thread_id)
                 .and_then(|key| active_agents.agent_tree.remove(key.as_str()))
-                .is_some_and(|metadata| {
-                    !metadata.agent_path.as_ref().is_some_and(AgentPath::is_root)
-                })
+                .is_some();
+            removed && active_agents.counted_agents.remove(&thread_id)
         };
         if removed_counted_agent {
             self.total_count.fetch_sub(1, Ordering::AcqRel);
@@ -129,6 +168,7 @@ impl AgentRegistry {
             .entry(root_path.clone())
             .or_insert_with(|| AgentMetadata {
                 agent_id: Some(thread_id),
+                owning_root_thread_id: Some(thread_id),
                 agent_path: Some(AgentPath::root()),
                 ..Default::default()
             })
@@ -159,6 +199,99 @@ impl AgentRegistry {
             .cloned()
     }
 
+    pub(crate) fn registration_for_close(&self, thread_id: ThreadId) -> Option<AgentRegistration> {
+        let active_agents = self
+            .active_agents
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        active_agents
+            .thread_paths
+            .get(&thread_id)
+            .and_then(|path| active_agents.agent_tree.get(path))
+            .cloned()
+            .map(|metadata| AgentRegistration {
+                metadata,
+                quota: if active_agents.counted_agents.contains(&thread_id) {
+                    AgentQuota::Counted
+                } else {
+                    AgentQuota::Unmetered
+                },
+            })
+            .or_else(|| active_agents.closed_agents.get(&thread_id).cloned())
+    }
+
+    pub(crate) fn authorize_agent_access(
+        &self,
+        caller_thread_id: ThreadId,
+        target_thread_id: ThreadId,
+    ) -> Option<AgentMetadata> {
+        let active_agents = self
+            .active_agents
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let caller_root_thread_id = active_agents
+            .thread_paths
+            .get(&caller_thread_id)
+            .and_then(|path| active_agents.agent_tree.get(path))
+            .and_then(|metadata| metadata.owning_root_thread_id)?;
+        let target = active_agents
+            .thread_paths
+            .get(&target_thread_id)
+            .and_then(|path| active_agents.agent_tree.get(path))
+            .cloned()
+            .or_else(|| {
+                active_agents
+                    .closed_agents
+                    .get(&target_thread_id)
+                    .map(|registration| registration.metadata.clone())
+            })?;
+        (target.owning_root_thread_id == Some(caller_root_thread_id)).then_some(target)
+    }
+
+    pub(crate) fn remember_closed_agent(&self, registration: AgentRegistration) {
+        let Some(thread_id) = registration.metadata.agent_id else {
+            return;
+        };
+        let mut active_agents = self
+            .active_agents
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        active_agents
+            .closed_agent_order
+            .retain(|closed_thread_id| *closed_thread_id != thread_id);
+        active_agents.closed_agent_order.push_back(thread_id);
+        active_agents.closed_agents.insert(thread_id, registration);
+        while active_agents.closed_agents.len() > MAX_CLOSED_AGENT_TOMBSTONES {
+            if let Some(evicted_thread_id) = active_agents.closed_agent_order.pop_front() {
+                active_agents.closed_agents.remove(&evicted_thread_id);
+                active_agents
+                    .closed_agent_statuses
+                    .remove(&evicted_thread_id);
+            }
+        }
+    }
+
+    pub(crate) fn remember_closed_agent_status(&self, thread_id: ThreadId, status: AgentStatus) {
+        let mut active_agents = self
+            .active_agents
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if active_agents.closed_agents.contains_key(&thread_id) {
+            active_agents
+                .closed_agent_statuses
+                .insert(thread_id, status);
+        }
+    }
+
+    pub(crate) fn closed_agent_status(&self, thread_id: ThreadId) -> Option<AgentStatus> {
+        self.active_agents
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .closed_agent_statuses
+            .get(&thread_id)
+            .cloned()
+    }
+
     pub(crate) fn live_agents(&self) -> Vec<AgentMetadata> {
         self.active_agents
             .lock()
@@ -173,7 +306,7 @@ impl AgentRegistry {
             .collect()
     }
 
-    fn register_spawned_thread(&self, agent_metadata: AgentMetadata) {
+    fn register_spawned_thread_with_quota(&self, agent_metadata: AgentMetadata, quota: AgentQuota) {
         let Some(thread_id) = agent_metadata.agent_id else {
             return;
         };
@@ -181,6 +314,19 @@ impl AgentRegistry {
             .active_agents
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
+        active_agents.closed_agents.remove(&thread_id);
+        active_agents.closed_agent_statuses.remove(&thread_id);
+        active_agents
+            .closed_agent_order
+            .retain(|closed_thread_id| *closed_thread_id != thread_id);
+        match quota {
+            AgentQuota::Counted => {
+                active_agents.counted_agents.insert(thread_id);
+            }
+            AgentQuota::Unmetered => {
+                active_agents.counted_agents.remove(&thread_id);
+            }
+        }
         let key = agent_metadata
             .agent_path
             .as_ref()
@@ -199,7 +345,19 @@ impl AgentRegistry {
             && previous_thread_id != thread_id
         {
             active_agents.thread_paths.remove(&previous_thread_id);
+            if active_agents.counted_agents.remove(&previous_thread_id) {
+                self.total_count.fetch_sub(1, Ordering::AcqRel);
+            }
         }
+    }
+
+    #[cfg(test)]
+    fn register_spawned_thread(&self, agent_metadata: AgentMetadata) {
+        let quota = agent_metadata
+            .agent_id
+            .and_then(|thread_id| self.registration_for_close(thread_id))
+            .map_or(AgentQuota::Unmetered, |registration| registration.quota);
+        self.register_spawned_thread_with_quota(agent_metadata, quota);
     }
 
     fn reserve_agent_nickname(&self, names: &[&str], preferred: Option<&str>) -> Option<String> {
@@ -297,6 +455,7 @@ impl AgentRegistry {
 pub(crate) struct SpawnReservation {
     state: Arc<AgentRegistry>,
     active: bool,
+    quota: AgentQuota,
     reserved_agent_nickname: Option<String>,
     reserved_agent_path: Option<AgentPath>,
 }
@@ -326,7 +485,8 @@ impl SpawnReservation {
     pub(crate) fn commit(mut self, agent_metadata: AgentMetadata) {
         self.reserved_agent_nickname = None;
         self.reserved_agent_path = None;
-        self.state.register_spawned_thread(agent_metadata);
+        self.state
+            .register_spawned_thread_with_quota(agent_metadata, self.quota);
         self.active = false;
     }
 }
@@ -337,7 +497,9 @@ impl Drop for SpawnReservation {
             if let Some(agent_path) = self.reserved_agent_path.take() {
                 self.state.release_reserved_agent_path(&agent_path);
             }
-            self.state.total_count.fetch_sub(1, Ordering::AcqRel);
+            if self.quota == AgentQuota::Counted {
+                self.state.total_count.fetch_sub(1, Ordering::AcqRel);
+            }
         }
     }
 }

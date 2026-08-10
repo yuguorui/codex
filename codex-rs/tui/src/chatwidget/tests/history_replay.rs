@@ -76,6 +76,53 @@ async fn resumed_initial_messages_render_history() {
 }
 
 #[tokio::test]
+async fn replayed_workflow_result_read_finishes_one_live_cell() {
+    for (terminal_status, expected_text) in [
+        (WorkflowResultReadStatus::Completed, "Read Workflow result"),
+        (
+            WorkflowResultReadStatus::Failed,
+            "Failed to read Workflow result",
+        ),
+    ] {
+        let (mut chat, mut rx, _ops) = make_chatwidget_manual(/*model_override*/ None).await;
+        let item = |status| {
+            AppServerThreadItem::WorkflowResultRead(WorkflowResultReadItem {
+                id: "read-result".to_string(),
+                run_id: Some("wf_replayed".to_string()),
+                status,
+            })
+        };
+
+        chat.replay_thread_item(
+            item(WorkflowResultReadStatus::InProgress),
+            "turn-read-result".to_string(),
+            ReplayKind::ThreadSnapshot,
+        );
+        let active = chat
+            .active_cell_transcript_lines(/*width*/ 80)
+            .expect("in-progress read should remain active");
+        assert!(lines_to_single_string(&active).contains("Reading Workflow result"));
+
+        chat.handle_server_notification(
+            ServerNotification::ItemCompleted(ItemCompletedNotification {
+                thread_id: "thread-workflow".to_string(),
+                turn_id: "turn-read-result".to_string(),
+                item: item(terminal_status),
+                completed_at_ms: 2,
+            }),
+            /*replay_kind*/ None,
+        );
+
+        assert!(chat.transcript.active_cell.is_none());
+        let cells = drain_insert_history(&mut rx);
+        assert_eq!(cells.len(), 1);
+        let rendered = lines_to_single_string(&cells[0]);
+        assert!(rendered.contains(expected_text), "{rendered}");
+        assert!(!rendered.contains("Reading Workflow result"), "{rendered}");
+    }
+}
+
+#[tokio::test]
 async fn replayed_failed_turns_preserve_overload_warnings_between_retries() {
     let (mut chat, mut rx, _ops) = make_chatwidget_manual(/*model_override*/ None).await;
     let prompt = "The workspace also looks super confusing with its separator.";

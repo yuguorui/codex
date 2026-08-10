@@ -30,13 +30,108 @@ use toml::Value as TomlValue;
 pub const DEFAULT_ROLE_NAME: &str = "default";
 const AGENT_TYPE_UNAVAILABLE_ERROR: &str = "agent type is currently not available";
 
+/// Role layers resolved once at an approval boundary.
+#[derive(Clone, Debug)]
+pub struct FrozenAgentRoles {
+    roles: BTreeMap<String, FrozenAgentRole>,
+}
+
+#[derive(Clone, Debug)]
+struct FrozenAgentRole {
+    layer: Option<TomlValue>,
+}
+
+impl FrozenAgentRoles {
+    pub fn names(&self) -> impl Iterator<Item = &str> {
+        self.roles.keys().map(String::as_str)
+    }
+
+    pub fn approval_value(&self) -> serde_json::Value {
+        serde_json::Value::Array(
+            self.roles
+                .iter()
+                .map(|(name, role)| {
+                    let layer = role
+                        .layer
+                        .as_ref()
+                        .and_then(|layer| toml::to_string(layer).ok());
+                    serde_json::json!({
+                        "name": name,
+                        "hasConfigLayer": layer.is_some(),
+                        "configLayerSha256": layer
+                            .as_deref()
+                            .map(codex_tools::sha256_hex),
+                    })
+                })
+                .collect(),
+        )
+    }
+}
+
+/// Resolves every selectable role and all relative paths before approval.
+pub async fn freeze_agent_roles(config: &Config) -> Result<FrozenAgentRoles, String> {
+    let mut names = built_in::configs().keys().cloned().collect::<BTreeSet<_>>();
+    names.extend(config.agent_roles.keys().cloned());
+    let mut roles = BTreeMap::new();
+    for name in names {
+        let declaration = resolve_role_config(config, &name)
+            .cloned()
+            .ok_or_else(|| format!("unknown agent_type '{name}'"))?;
+        let is_built_in = !config.agent_roles.contains_key(&name);
+        let layer = match declaration.config_file.as_ref() {
+            Some(config_file) => Some(
+                load_role_layer_toml(config, config_file, is_built_in, &name)
+                    .await
+                    .map_err(|error| {
+                        tracing::warn!("failed to freeze agent role: {error}");
+                        AGENT_TYPE_UNAVAILABLE_ERROR.to_string()
+                    })?,
+            ),
+            None => None,
+        };
+        roles.insert(name, FrozenAgentRole { layer });
+    }
+    Ok(FrozenAgentRoles { roles })
+}
+
+/// Applies a role from a previously resolved role set without reading configuration files.
+pub async fn apply_frozen_agent_role_to_config(
+    config: &mut Config,
+    roles: &FrozenAgentRoles,
+    role_name: Option<&str>,
+) -> Result<(), String> {
+    let role_name = role_name.unwrap_or(DEFAULT_ROLE_NAME);
+    let role = roles
+        .roles
+        .get(role_name)
+        .ok_or_else(|| format!("unknown agent_type '{role_name}'"))?;
+    let Some(role_layer_toml) = role.layer.clone() else {
+        return Ok(());
+    };
+    let preserve_current_provider = role_layer_toml.get("model_provider").is_none();
+    let preserve_current_service_tier = role_layer_toml.get("service_tier").is_none();
+    *config = reload::build_next_config(
+        config,
+        role_layer_toml,
+        RoleDeveloperInstructions::UseConfigLayers,
+        preserve_current_provider,
+        preserve_current_service_tier,
+    )
+    .await
+    .map_err(|error| {
+        tracing::warn!("failed to apply frozen agent role: {error}");
+        AGENT_TYPE_UNAVAILABLE_ERROR.to_string()
+    })?;
+    Ok(())
+}
+
 /// Applies a named role layer to `config` while preserving caller-owned provider settings.
 ///
 /// The role layer is inserted at session-flag precedence so it can override persisted config, but
 /// the caller's current `model_provider` and `service_tier` remain sticky runtime choices unless
 /// the role explicitly sets the corresponding top-level config key. Rebuilding the config without
 /// those overrides would make a spawned agent silently fall back to default settings.
-pub(crate) async fn apply_role_to_config(
+pub async fn apply_role_to_config(
     config: &mut Config,
     role_name: Option<&str>,
 ) -> Result<(), String> {
@@ -209,6 +304,14 @@ mod reload {
             next_config
                 .model_reasoning_effort
                 .clone_from(&config.model_reasoning_effort);
+        }
+        if preserve_current_provider {
+            next_config
+                .model_provider_id
+                .clone_from(&config.model_provider_id);
+            next_config
+                .model_provider
+                .clone_from(&config.model_provider);
         }
         if preserve_current_base_instructions {
             let personality_changed = config.personality != next_config.personality
