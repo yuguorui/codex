@@ -1,4 +1,6 @@
 use super::*;
+use crate::outgoing_message::OutgoingDelivery;
+use crate::outgoing_message::OutgoingMessageSender;
 use codex_app_server_protocol::AuthRecoveryNotification;
 use codex_app_server_protocol::ConfigWarningNotification;
 use codex_app_server_protocol::RequestId;
@@ -29,6 +31,305 @@ fn app_server_notification(notification: ServerNotification) -> OutgoingMessage 
         notification,
         emitted_at_ms: Some(1_234),
     })
+}
+
+#[tokio::test]
+async fn tracked_delivery_to_disconnected_connection_is_not_acknowledged() {
+    let connection_id = ConnectionId(404);
+    let (write_complete_tx, write_complete_rx) = tokio::sync::oneshot::channel();
+
+    route_outgoing_envelope(
+        &mut HashMap::new(),
+        OutgoingEnvelope::ToConnection {
+            connection_id,
+            message: app_server_notification(ServerNotification::ConfigWarning(
+                ConfigWarningNotification {
+                    summary: "test".to_string(),
+                    details: None,
+                    path: None,
+                    range: None,
+                },
+            )),
+            write_complete_tx: Some(write_complete_tx),
+        },
+    )
+    .await;
+
+    assert!(write_complete_rx.await.is_err());
+}
+
+#[tokio::test]
+async fn tracked_delivery_acknowledges_only_after_writer_completion() {
+    let connection_id = ConnectionId(405);
+    let (writer_tx, mut writer_rx) = mpsc::channel(1);
+    let mut connections = HashMap::from([(
+        connection_id,
+        OutboundConnectionState::new(
+            writer_tx,
+            Arc::new(AtomicBool::new(true)),
+            Arc::new(AtomicBool::new(true)),
+            Arc::new(RwLock::new(HashSet::new())),
+            /*disconnect_sender*/ None,
+        ),
+    )]);
+    let (write_complete_tx, mut write_complete_rx) = tokio::sync::oneshot::channel();
+
+    route_outgoing_envelope(
+        &mut connections,
+        OutgoingEnvelope::ToConnection {
+            connection_id,
+            message: app_server_notification(ServerNotification::ConfigWarning(
+                ConfigWarningNotification {
+                    summary: "test".to_string(),
+                    details: None,
+                    path: None,
+                    range: None,
+                },
+            )),
+            write_complete_tx: Some(write_complete_tx),
+        },
+    )
+    .await;
+
+    assert!(matches!(
+        write_complete_rx.try_recv(),
+        Err(tokio::sync::oneshot::error::TryRecvError::Empty)
+    ));
+    let queued = writer_rx
+        .recv()
+        .await
+        .expect("writer should receive message");
+    queued
+        .write_complete_tx
+        .expect("tracked write should include completion sender")
+        .send(OutgoingWriteResult::Written)
+        .expect("delivery waiter should remain online");
+    assert_eq!(
+        write_complete_rx.await.expect("writer should acknowledge"),
+        OutgoingWriteResult::Written
+    );
+}
+
+#[tokio::test]
+async fn tracked_opt_out_is_not_a_target() {
+    let connection_id = ConnectionId(406);
+    let (writer_tx, mut writer_rx) = mpsc::channel(1);
+    let mut connections = HashMap::from([(
+        connection_id,
+        OutboundConnectionState::new(
+            writer_tx,
+            Arc::new(AtomicBool::new(true)),
+            Arc::new(AtomicBool::new(true)),
+            Arc::new(RwLock::new(HashSet::from(["configWarning".to_string()]))),
+            /*disconnect_sender*/ None,
+        ),
+    )]);
+    let (write_complete_tx, write_complete_rx) = tokio::sync::oneshot::channel();
+
+    route_outgoing_envelope(
+        &mut connections,
+        OutgoingEnvelope::ToConnection {
+            connection_id,
+            message: app_server_notification(ServerNotification::ConfigWarning(
+                ConfigWarningNotification {
+                    summary: "test".to_string(),
+                    details: None,
+                    path: None,
+                    range: None,
+                },
+            )),
+            write_complete_tx: Some(write_complete_tx),
+        },
+    )
+    .await;
+
+    assert_eq!(
+        write_complete_rx
+            .await
+            .expect("filter should settle delivery"),
+        OutgoingWriteResult::NotTarget
+    );
+    assert!(writer_rx.try_recv().is_err());
+}
+
+#[tokio::test]
+async fn tracked_experimental_filter_is_not_a_target() {
+    let connection_id = ConnectionId(407);
+    let (writer_tx, mut writer_rx) = mpsc::channel(1);
+    let mut connections = HashMap::from([(
+        connection_id,
+        OutboundConnectionState::new(
+            writer_tx,
+            Arc::new(AtomicBool::new(true)),
+            Arc::new(AtomicBool::new(false)),
+            Arc::new(RwLock::new(HashSet::new())),
+            /*disconnect_sender*/ None,
+        ),
+    )]);
+    let (write_complete_tx, write_complete_rx) = tokio::sync::oneshot::channel();
+
+    route_outgoing_envelope(
+        &mut connections,
+        OutgoingEnvelope::ToConnection {
+            connection_id,
+            message: app_server_notification(thread_realtime_started_notification()),
+            write_complete_tx: Some(write_complete_tx),
+        },
+    )
+    .await;
+
+    assert_eq!(
+        write_complete_rx
+            .await
+            .expect("filter should settle delivery"),
+        OutgoingWriteResult::NotTarget
+    );
+    assert!(writer_rx.try_recv().is_err());
+}
+
+#[tokio::test]
+async fn tracked_fanout_reports_partial_writer_success_per_subscriber() {
+    let (outgoing_tx, mut outgoing_rx) = mpsc::channel(2);
+    let outgoing = Arc::new(OutgoingMessageSender::new(
+        outgoing_tx,
+        codex_analytics::AnalyticsEventsClient::disabled(),
+    ));
+    let written_connection = ConnectionId(408);
+    let disconnected_connection = ConnectionId(409);
+    let (written_tx, mut written_rx) = mpsc::channel(1);
+    let (disconnected_tx, disconnected_rx) = mpsc::channel(1);
+    drop(disconnected_rx);
+    let initialized = Arc::new(AtomicBool::new(true));
+    let experimental_api_enabled = Arc::new(AtomicBool::new(true));
+    let opted_out = Arc::new(RwLock::new(HashSet::new()));
+    let mut connections = HashMap::from([
+        (
+            written_connection,
+            OutboundConnectionState::new(
+                written_tx,
+                Arc::clone(&initialized),
+                Arc::clone(&experimental_api_enabled),
+                Arc::clone(&opted_out),
+                /*disconnect_sender*/ None,
+            ),
+        ),
+        (
+            disconnected_connection,
+            OutboundConnectionState::new(
+                disconnected_tx,
+                initialized,
+                experimental_api_enabled,
+                opted_out,
+                /*disconnect_sender*/ None,
+            ),
+        ),
+    ]);
+    let delivery = tokio::spawn({
+        let outgoing = Arc::clone(&outgoing);
+        async move {
+            outgoing
+                .try_send_server_notification_to_connections_with_timeout(
+                    &[written_connection, disconnected_connection],
+                    ServerNotification::ConfigWarning(ConfigWarningNotification {
+                        summary: "test".to_string(),
+                        details: None,
+                        path: None,
+                        range: None,
+                    }),
+                    Duration::from_secs(1),
+                )
+                .await
+        }
+    });
+
+    for _ in 0..2 {
+        let envelope = outgoing_rx
+            .recv()
+            .await
+            .expect("fanout should enqueue message");
+        route_outgoing_envelope(&mut connections, envelope).await;
+    }
+    written_rx
+        .recv()
+        .await
+        .expect("connected writer should receive message")
+        .write_complete_tx
+        .expect("tracked message should carry writer acknowledgment")
+        .send(OutgoingWriteResult::Written)
+        .expect("fanout should still await writer");
+
+    let delivery = delivery.await.expect("fanout task should finish");
+    assert!(!delivery.truncated);
+    assert_eq!(delivery.subscribers.len(), 2);
+    assert!(delivery.subscribers.iter().any(|subscriber| {
+        subscriber.connection_id == written_connection
+            && subscriber.outcome == OutgoingDelivery::Written
+    }));
+    assert!(delivery.subscribers.iter().any(|subscriber| {
+        subscriber.connection_id == disconnected_connection
+            && subscriber.outcome == OutgoingDelivery::Retryable
+    }));
+}
+
+#[tokio::test]
+async fn tracked_fanout_times_out_after_writer_accepts_without_completing() {
+    let (outgoing_tx, mut outgoing_rx) = mpsc::channel(1);
+    let outgoing = Arc::new(OutgoingMessageSender::new(
+        outgoing_tx,
+        codex_analytics::AnalyticsEventsClient::disabled(),
+    ));
+    let connection_id = ConnectionId(410);
+    let (writer_tx, mut writer_rx) = mpsc::channel(1);
+    let mut connections = HashMap::from([(
+        connection_id,
+        OutboundConnectionState::new(
+            writer_tx,
+            Arc::new(AtomicBool::new(true)),
+            Arc::new(AtomicBool::new(true)),
+            Arc::new(RwLock::new(HashSet::new())),
+            /*disconnect_sender*/ None,
+        ),
+    )]);
+    let delivery = tokio::spawn({
+        let outgoing = Arc::clone(&outgoing);
+        async move {
+            outgoing
+                .try_send_server_notification_to_connections_with_timeout(
+                    &[connection_id],
+                    ServerNotification::ConfigWarning(ConfigWarningNotification {
+                        summary: "test".to_string(),
+                        details: None,
+                        path: None,
+                        range: None,
+                    }),
+                    Duration::from_millis(10),
+                )
+                .await
+        }
+    });
+    let envelope = outgoing_rx
+        .recv()
+        .await
+        .expect("fanout should enqueue message");
+    route_outgoing_envelope(&mut connections, envelope).await;
+    let queued = writer_rx
+        .recv()
+        .await
+        .expect("writer should accept tracked message");
+
+    let delivery = timeout(Duration::from_secs(1), delivery)
+        .await
+        .expect("write deadline should finish")
+        .expect("fanout task should not panic");
+    assert_eq!(delivery.subscribers.len(), 1);
+    assert_eq!(delivery.subscribers[0].outcome, OutgoingDelivery::Retryable);
+    assert!(
+        queued
+            .write_complete_tx
+            .expect("tracked message should carry writer acknowledgment")
+            .send(OutgoingWriteResult::Written)
+            .is_err()
+    );
 }
 
 #[tokio::test]

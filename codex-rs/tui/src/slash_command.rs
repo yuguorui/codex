@@ -43,6 +43,8 @@ pub enum SlashCommand {
     Plan,
     Goal,
     Agents,
+    Workflows,
+    Agent,
     Side,
     Btw,
     Copy,
@@ -132,7 +134,8 @@ impl SlashCommand {
             SlashCommand::Plan => "switch to Plan mode",
             SlashCommand::Goal => "set or view the goal for a long-running task",
             SlashCommand::Agents => "view and switch between all active agent sessions",
-            SlashCommand::MultiAgents => "switch between this session's subagents",
+            SlashCommand::Workflows => "view and control dynamic workflow runs",
+            SlashCommand::Agent | SlashCommand::MultiAgents => "switch the active agent thread",
             SlashCommand::Side | SlashCommand::Btw => {
                 "start a side conversation in an ephemeral fork"
             }
@@ -250,6 +253,7 @@ impl SlashCommand {
             | SlashCommand::Stop
             | SlashCommand::App
             | SlashCommand::Goal
+            | SlashCommand::Workflows
             | SlashCommand::Mcp
             | SlashCommand::Apps
             | SlashCommand::Plugins
@@ -264,7 +268,7 @@ impl SlashCommand {
             | SlashCommand::Btw => true,
             SlashCommand::Rollout => true,
             SlashCommand::TestApproval => true,
-            SlashCommand::Agents | SlashCommand::MultiAgents => true,
+            SlashCommand::Agent | SlashCommand::Agents | SlashCommand::MultiAgents => true,
             SlashCommand::Theme | SlashCommand::Pets => false,
         }
     }

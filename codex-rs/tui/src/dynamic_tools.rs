@@ -1066,6 +1066,10 @@ async fn execute_inner(
                                         "id": item.id, "turnId": turn.id, "type": "webSearch",
                                         "name": "webSearch", "status": null
                                     })),
+                                    ThreadItem::WorkflowResultRead(item) => Some(json!({
+                                        "id": item.id, "turnId": turn.id, "type": "workflowResultRead",
+                                        "name": "ReadWorkflowResult", "status": item.status
+                                    })),
                                     ThreadItem::UserMessage { .. }
                                     | ThreadItem::FunctionCallOutput { .. }
                                     | ThreadItem::HookPrompt { .. }
@@ -1074,6 +1078,7 @@ async fn execute_inner(
                                     | ThreadItem::Reasoning { .. }
                                     | ThreadItem::SubAgentActivity { .. }
                                     | ThreadItem::ImageView { .. }
+                                    | ThreadItem::WorkflowInputAnalysis(_)
                                     | ThreadItem::EnteredReviewMode { .. }
                                     | ThreadItem::ExitedReviewMode { .. }
                                     | ThreadItem::ContextCompaction { .. } => None,
@@ -1499,6 +1504,13 @@ fn turn_summary(turn: &Turn, include_outputs: bool, output_chars: usize) -> Valu
             }),
             ThreadItem::Sleep(item) => json!({
                 "type": "sleep", "id": item.id, "durationMs": item.duration_ms
+            }),
+            ThreadItem::WorkflowInputAnalysis(item) => json!({
+                "type": "workflowInputAnalysis", "id": item.id
+            }),
+            ThreadItem::WorkflowResultRead(item) => json!({
+                "type": "workflowResultRead", "id": item.id,
+                "runId": item.run_id, "status": item.status
             }),
             ThreadItem::ImageGeneration(item) => {
                 let mut image = json!({
