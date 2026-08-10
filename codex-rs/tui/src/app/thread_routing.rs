@@ -171,6 +171,11 @@ impl App {
         self.active_thread_id.or(self.chat_widget.thread_id())
     }
 
+    pub(crate) fn viewing_workflow_agent_thread(&self) -> bool {
+        self.current_displayed_thread_id()
+            .is_some_and(|thread_id| self.agent_navigation.is_workflow_agent(thread_id))
+    }
+
     pub(super) fn ignore_same_thread_resume(
         &mut self,
         target_session: &crate::resume_picker::SessionTarget,
@@ -1121,6 +1126,20 @@ impl App {
         &mut self,
         notification: &ServerNotification,
     ) {
+        if let ServerNotification::WorkflowProgress(notification) = notification {
+            let workflow_agent_thread_ids = notification
+                .progress
+                .iter()
+                .filter_map(workflow_agent_thread_id);
+            if self
+                .agent_navigation
+                .mark_workflow_agents(workflow_agent_thread_ids)
+            {
+                self.sync_active_agent_label();
+            }
+            return;
+        }
+
         if let Some(activity) =
             sub_agent_activity_item(notification).and_then(sub_agent_activity_display)
         {

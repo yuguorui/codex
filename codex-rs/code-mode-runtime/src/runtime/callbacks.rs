@@ -321,6 +321,22 @@ pub(super) fn clear_timeout_callback(
     retval.set(v8::undefined(scope).into());
 }
 
+pub(super) fn continuation_scope_callback(
+    scope: &mut v8::PinScope<'_, '_>,
+    _args: v8::FunctionCallbackArguments,
+    mut retval: v8::ReturnValue<v8::Value>,
+) {
+    retval.set(scope.get_continuation_preserved_embedder_data());
+}
+
+pub(super) fn set_continuation_scope_callback(
+    scope: &mut v8::PinScope<'_, '_>,
+    args: v8::FunctionCallbackArguments,
+    _retval: v8::ReturnValue<v8::Value>,
+) {
+    scope.set_continuation_preserved_embedder_data(args.get(0));
+}
+
 pub(super) fn yield_control_callback(
     scope: &mut v8::PinScope<'_, '_>,
     _args: v8::FunctionCallbackArguments,
