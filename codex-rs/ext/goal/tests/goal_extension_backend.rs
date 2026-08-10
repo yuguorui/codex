@@ -1490,6 +1490,7 @@ fn tool_call(tool_name: &str, call_id: &str, arguments: serde_json::Value) -> To
         conversation_history: codex_extension_api::ConversationHistory::default(),
         turn_item_emitter: Arc::new(NoopTurnItemEmitter),
         environments: Vec::new(),
+        agent_configuration: None,
         payload: ToolPayload::Function {
             arguments: arguments.to_string(),
         },

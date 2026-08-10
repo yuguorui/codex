@@ -1,0 +1,4 @@
+interface:
+  display_name: "Workflow Orchestration"
+  short_description: "Author reliable multi-agent workflow scripts"
+  default_prompt: "Use $workflow to design or revise a Workflow script."
