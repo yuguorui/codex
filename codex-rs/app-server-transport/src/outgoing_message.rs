@@ -9,8 +9,17 @@ use serde::Serialize;
 use tokio::sync::oneshot;
 
 /// Stable identifier for a transport connection.
-#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
 pub struct ConnectionId(pub u64);
+
+/// Terminal result reported by the transport writer for a tracked message.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum OutgoingWriteResult {
+    /// The complete message reached the transport's terminal delivery boundary.
+    Written,
+    /// Connection capabilities or notification preferences excluded this message.
+    NotTarget,
+}
 
 impl fmt::Display for ConnectionId {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -46,7 +55,7 @@ pub struct OutgoingError {
 #[derive(Debug)]
 pub struct QueuedOutgoingMessage {
     pub message: OutgoingMessage,
-    pub write_complete_tx: Option<oneshot::Sender<()>>,
+    pub write_complete_tx: Option<oneshot::Sender<OutgoingWriteResult>>,
 }
 
 impl QueuedOutgoingMessage {

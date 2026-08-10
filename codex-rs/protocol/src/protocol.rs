@@ -63,6 +63,9 @@ use crate::turn_input::TurnInputMode;
 use crate::turn_input::TurnInputRequest;
 use crate::turn_input::TurnInputSubmission;
 use crate::turn_input::TurnStartOptions;
+use crate::workflow::WorkflowCompletedEvent;
+use crate::workflow::WorkflowProgressEvent;
+use crate::workflow::WorkflowStartedEvent;
 use codex_extension_items::image_generation::ImageGenerationFailure;
 use codex_utils_absolute_path::AbsolutePathBuf;
 use codex_utils_path_uri::PathUri;
@@ -1445,6 +1448,15 @@ pub enum EventMsg {
 
     /// A durable thread-scoped user-message queue changed.
     ThreadQueueChanged(ThreadQueueChangedEvent),
+
+    /// A local dynamic workflow started in the background.
+    WorkflowStarted(WorkflowStartedEvent),
+
+    /// A local dynamic workflow emitted a progress snapshot.
+    WorkflowProgress(WorkflowProgressEvent),
+
+    /// A local dynamic workflow reached a terminal state.
+    WorkflowCompleted(WorkflowCompletedEvent),
 
     /// Incremental MCP startup progress updates.
     McpStartupUpdate(McpStartupUpdateEvent),

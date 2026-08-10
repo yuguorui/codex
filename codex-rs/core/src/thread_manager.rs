@@ -1,12 +1,15 @@
 use crate::CodexAppsToolsCache;
 use crate::agent::AgentControl;
+use crate::agent::RolloutBudgetEnforcement;
 use crate::attestation::AttestationProvider;
 use crate::codex_thread::CodexThread;
+use crate::codex_thread::ThreadTeardownStatus;
 use crate::config::Config;
 use crate::config::ThreadStoreConfig;
 use crate::current_time::TimeProvider;
 use crate::environment_selection::TurnEnvironmentSnapshot;
 use crate::environment_selection::default_thread_environment_selections;
+use crate::environment_selection::opaque_executor_id;
 use crate::mcp::McpManager;
 use crate::rollout::truncation;
 use crate::session::ForkPersistence;
@@ -236,6 +239,8 @@ pub struct StartThreadOptions {
     pub metrics_service_name: Option<String>,
     pub parent_trace: Option<W3cTraceContext>,
     pub environments: Option<Vec<TurnEnvironmentSelection>>,
+    pub captured_environments: Option<CapturedThreadEnvironments>,
+    pub frozen_project_instructions: Option<Arc<crate::LoadedAgentsMd>>,
     pub thread_extension_init: ExtensionDataInit,
     pub client_mcp_extensions: ClientMcpExtensions,
     /// Thread ID reserved before startup so the caller can associate host-owned state with it.
@@ -255,10 +260,63 @@ impl StartThreadOptions {
             metrics_service_name: None,
             parent_trace: None,
             environments: None,
+            captured_environments: None,
+            frozen_project_instructions: None,
             thread_extension_init: ExtensionDataInit::default(),
             client_mcp_extensions: ClientMcpExtensions::default(),
             reserved_thread_id: None,
         }
+    }
+}
+
+/// Concrete environment attachments captured from a loaded thread.
+///
+/// Callers that launch work after an approval boundary can retain this value so a later
+/// environment-registry update cannot redirect the work to a different executor instance.
+#[derive(Clone)]
+pub struct CapturedThreadEnvironments {
+    snapshot: TurnEnvironmentSnapshot,
+}
+
+impl CapturedThreadEnvironments {
+    /// Describes the selections and concrete executor identities held by this snapshot.
+    pub fn descriptors(&self) -> Vec<CapturedThreadEnvironmentDescriptor> {
+        self.snapshot
+            .turn_environments()
+            .map(|environment| CapturedThreadEnvironmentDescriptor {
+                selection: environment.selection(),
+                is_remote: environment.environment.is_remote(),
+                executor_id: opaque_executor_id(&environment.environment),
+            })
+            .collect()
+    }
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct CapturedThreadEnvironmentDescriptor {
+    /// Exact environment selection captured from the owning thread.
+    pub selection: TurnEnvironmentSelection,
+    /// Whether the concrete executor is remote to the current Codex process.
+    pub is_remote: bool,
+    /// Opaque process-scoped id of the concrete executor instance.
+    pub executor_id: String,
+}
+
+impl CapturedThreadEnvironments {
+    /// Verifies that projected environments retain the exact captured executor instances.
+    pub fn has_same_executors(
+        &self,
+        environments: &[codex_tools::ToolExecutionEnvironment],
+    ) -> bool {
+        let captured = self.snapshot.turn_environments().collect::<Vec<_>>();
+        captured.len() == environments.len()
+            && captured
+                .iter()
+                .zip(environments)
+                .all(|(captured, expected)| {
+                    expected.has_executor(&captured.environment)
+                        && expected.executor_id == opaque_executor_id(&captured.environment)
+                })
     }
 }
 
@@ -689,6 +747,17 @@ impl ThreadManager {
         });
     }
 
+    /// Captures the exact environment instances currently attached to a loaded thread.
+    pub async fn capture_thread_environments(
+        &self,
+        thread_id: ThreadId,
+    ) -> CodexResult<CapturedThreadEnvironments> {
+        let thread = self.get_thread(thread_id).await?;
+        Ok(CapturedThreadEnvironments {
+            snapshot: thread.session.services.turn_environments.snapshot().await,
+        })
+    }
+
     /// Refreshes every loaded thread and marks threads that are still being created.
     pub async fn invalidate_mcp_runtimes(&self) {
         self.invalidate_starting_mcp_runtimes();
@@ -962,10 +1031,135 @@ impl ThreadManager {
 
     async fn start_thread_inner(
         &self,
-        mut options: StartThreadOptions,
+        options: StartThreadOptions,
         forked_from_thread_id: Option<ThreadId>,
     ) -> CodexResult<NewThread> {
         let agent_control = self.agent_control_for_config(&options.config);
+        self.start_thread_inner_with_agent_control(
+            options,
+            /*parent_thread_id*/ None,
+            forked_from_thread_id,
+            agent_control,
+        )
+        .await
+    }
+
+    /// Starts a fresh-context subagent while sharing only the parent's rollout budget.
+    pub async fn start_fresh_subagent(
+        &self,
+        parent_thread_id: ThreadId,
+        options: StartThreadOptions,
+    ) -> CodexResult<NewThread> {
+        let thread = self
+            .start_fresh_subagent_with_rollout_budget_enforcement(
+                parent_thread_id,
+                options,
+                RolloutBudgetEnforcement::Enforce,
+            )
+            .await?;
+        self.state.notify_thread_created(thread.thread_id);
+        Ok(thread)
+    }
+
+    /// Starts a fresh-context subagent that contributes to the parent's rollout budget without
+    /// discarding a result that crosses the limit while the request is already in flight.
+    pub async fn start_fresh_subagent_observing_rollout_budget(
+        &self,
+        parent_thread_id: ThreadId,
+        options: StartThreadOptions,
+    ) -> CodexResult<NewThread> {
+        let thread = self
+            .start_fresh_subagent_with_rollout_budget_enforcement(
+                parent_thread_id,
+                options,
+                RolloutBudgetEnforcement::Observe,
+            )
+            .await?;
+        self.state.notify_thread_created(thread.thread_id);
+        Ok(thread)
+    }
+
+    /// Starts a fresh-context subagent with rollout-budget accounting disabled.
+    pub async fn start_fresh_subagent_without_rollout_budget(
+        &self,
+        parent_thread_id: ThreadId,
+        options: StartThreadOptions,
+    ) -> CodexResult<NewThread> {
+        let parent = self.get_thread(parent_thread_id).await?;
+        let parent_control = &parent.session.services.agent_control;
+        let agent_control = parent_control.with_shared_registry_without_rollout_budget();
+        let (agent_nickname, agent_role) = match options.session_source.as_ref() {
+            Some(SessionSource::SubAgent(SubAgentSource::ThreadSpawn {
+                agent_nickname,
+                agent_role,
+                ..
+            })) => (agent_nickname.clone(), agent_role.clone()),
+            _ => (None, None),
+        };
+        let session_source = options.session_source.clone();
+        let thread = self
+            .start_thread_inner_with_agent_control(
+                options,
+                Some(parent_thread_id),
+                /*forked_from_thread_id*/ None,
+                agent_control,
+            )
+            .await?;
+        parent_control.register_fresh_subagent(
+            parent_thread_id,
+            thread.thread_id,
+            agent_nickname,
+            agent_role,
+        )?;
+        parent_control
+            .persist_thread_spawn_edge_for_source(
+                thread.thread.as_ref(),
+                thread.thread_id,
+                session_source.as_ref(),
+            )
+            .await;
+        self.state.notify_thread_created(thread.thread_id);
+        Ok(thread)
+    }
+
+    async fn start_fresh_subagent_with_rollout_budget_enforcement(
+        &self,
+        parent_thread_id: ThreadId,
+        options: StartThreadOptions,
+        rollout_budget_enforcement: RolloutBudgetEnforcement,
+    ) -> CodexResult<NewThread> {
+        let parent = self.get_thread(parent_thread_id).await?;
+        let parent_control = &parent.session.services.agent_control;
+        let agent_control = if parent_control.rollout_budget().token_snapshot().is_some() {
+            AgentControl::new_with_shared_rollout_budget(
+                Arc::downgrade(&self.state),
+                parent_control,
+                rollout_budget_enforcement,
+            )
+        } else {
+            AgentControl::new_with_rollout_budget_enforcement(
+                Arc::downgrade(&self.state),
+                self.state.thread_id_generator.clone(),
+                options.config.rollout_budget.clone(),
+                rollout_budget_enforcement,
+            )
+        };
+        self.start_thread_inner_with_agent_control(
+            options,
+            Some(parent_thread_id),
+            /*forked_from_thread_id*/ None,
+            agent_control,
+        )
+        .await
+    }
+
+    async fn start_thread_inner_with_agent_control(
+        &self,
+        mut options: StartThreadOptions,
+        parent_thread_id: Option<ThreadId>,
+        forked_from_thread_id: Option<ThreadId>,
+        agent_control: AgentControl,
+    ) -> CodexResult<NewThread> {
         let (resumed_session_source, resumed_thread_source) = options
             .initial_history
             .get_resumed_session_sources()
@@ -979,6 +1173,7 @@ impl ThreadManager {
         options.thread_source = options.thread_source.take().or(resumed_thread_source);
         let mut request =
             ThreadSpawnRequest::new(options, Arc::clone(&self.state.auth_manager), agent_control);
+        request.parent_thread_id = parent_thread_id;
         request.forked_from_thread_id = forked_from_thread_id;
         Box::pin(self.state.spawn_thread(request)).await
     }
@@ -1086,11 +1281,10 @@ impl ThreadManager {
             .get_resumed_session_sources()
             .unwrap_or_else(|| (self.state.session_source.clone(), None));
         if let InitialHistory::Resumed(resumed) = &initial_history
-            && initial_history.get_multi_agent_version() == Some(MultiAgentVersion::V2)
             && !session_source.is_non_root_agent()
         {
             agent_control
-                .restore_v2_agent_metadata(&config, resumed.conversation_id)
+                .restore_agent_metadata(&config, resumed.conversation_id)
                 .await;
         }
         let options = StartThreadOptions {
@@ -1176,6 +1370,28 @@ impl ThreadManager {
         } else {
             None
         }
+    }
+
+    /// Force-closes a registered subagent and applies the ordinary close lifecycle cleanup.
+    pub async fn force_close_subagent(
+        &self,
+        thread_id: ThreadId,
+        timeout: Duration,
+    ) -> CodexResult<ThreadTeardownStatus> {
+        let thread = self.get_thread(thread_id).await?;
+        let agent_control = thread.session.services.agent_control.clone();
+        let completed_status = match thread.agent_status().await {
+            status @ crate::agent::AgentStatus::Completed(_) => Some(status),
+            _ => None,
+        };
+        let status = thread.force_close(timeout).await;
+        if status == ThreadTeardownStatus::Confirmed {
+            agent_control.close_agent(thread_id, thread_id).await?;
+            if let Some(completed_status) = completed_status {
+                agent_control.remember_closed_agent_status(thread_id, completed_status);
+            }
+        }
+        Ok(status)
     }
 
     /// Tries to shut down all tracked threads concurrently within the provided timeout.
@@ -1869,10 +2085,15 @@ impl ThreadManagerState {
             metrics_service_name,
             parent_trace,
             environments,
+            captured_environments,
+            frozen_project_instructions,
             thread_extension_init,
             client_mcp_extensions,
             reserved_thread_id,
         } = options;
+        let inherited_environments = captured_environments
+            .map(|captured| captured.snapshot)
+            .or(inherited_environments);
         let session_source = session_source.unwrap_or_else(|| self.session_source.clone());
         let environments = environments.unwrap_or_else(|| {
             default_thread_environment_selections(
@@ -1976,6 +2197,7 @@ impl ThreadManagerState {
             config,
             allow_provider_model_fallback,
             user_instructions,
+            frozen_project_instructions,
             installation_id: self.installation_id.clone(),
             auth_manager,
             models_manager: Arc::clone(&self.models_manager),
@@ -2339,3 +2561,7 @@ fn append_interrupted_boundary(
 #[cfg(test)]
 #[path = "thread_manager_tests.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "thread_manager_workflow_tests.rs"]
+mod workflow_tests;
