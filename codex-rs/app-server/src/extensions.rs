@@ -15,6 +15,8 @@ use codex_core::config::Config;
 use codex_exec_server::EnvironmentManager;
 use codex_extension_api::AgentSpawnFuture;
 use codex_extension_api::AgentSpawner;
+use codex_extension_api::ExtensionEventDelivery;
+use codex_extension_api::ExtensionEventDeliveryFuture;
 use codex_extension_api::ExtensionEventSink;
 use codex_extension_api::ExtensionRegistry;
 use codex_extension_api::ExtensionRegistryBuilder;
@@ -29,6 +31,7 @@ use codex_protocol::protocol::Event;
 use codex_protocol::protocol::EventMsg;
 use codex_queue_extension::QueuedItemService;
 use codex_rollout::state_db::StateDbHandle;
+use codex_workflow_extension::WorkflowService;
 
 use crate::outgoing_message::OutgoingMessageSender;
 use crate::outgoing_message::ThreadScopedOutgoingMessageSender;
@@ -42,6 +45,7 @@ pub(crate) struct ThreadExtensionDependencies {
     pub(crate) analytics_events_client: AnalyticsEventsClient,
     pub(crate) thread_manager: Weak<ThreadManager>,
     pub(crate) goal_service: Arc<GoalService>,
+    pub(crate) workflow_service: WorkflowService,
     pub(crate) environment_manager: Arc<EnvironmentManager>,
     pub(crate) executor_skill_provider: Arc<dyn codex_skills_extension::SkillProvider>,
     pub(crate) git_attribution_base_url: String,
@@ -64,6 +68,7 @@ where
         analytics_events_client,
         thread_manager,
         goal_service,
+        workflow_service,
         environment_manager,
         executor_skill_provider,
         git_attribution_base_url,
@@ -88,6 +93,7 @@ where
             },
         );
     }
+    codex_workflow_extension::install(&mut builder, thread_manager.clone(), workflow_service);
     codex_git_attribution::install(
         &mut builder,
         auth_manager.clone(),
@@ -134,9 +140,14 @@ pub(crate) fn app_server_extension_event_sink(
     outgoing: Arc<OutgoingMessageSender>,
     thread_state_manager: ThreadStateManager,
 ) -> Arc<dyn ExtensionEventSink> {
+    let workflow_notifications = crate::workflow_events::WorkflowNotificationSender::new(
+        Arc::clone(&outgoing),
+        thread_state_manager.clone(),
+    );
     Arc::new(AppServerExtensionEventSink {
         outgoing,
         thread_state_manager,
+        workflow_notifications,
     })
 }
 
@@ -165,6 +176,7 @@ pub(crate) async fn send_thread_warning(
 struct AppServerExtensionEventSink {
     outgoing: Arc<OutgoingMessageSender>,
     thread_state_manager: ThreadStateManager,
+    workflow_notifications: crate::workflow_events::WorkflowNotificationSender,
 }
 
 const MAX_EXTENSION_WARNING_BYTES: usize = 256;
@@ -239,10 +251,55 @@ impl ExtensionEventSink for AppServerExtensionEventSink {
                         .await;
                 });
             }
+            EventMsg::WorkflowStarted(event) => {
+                tracing::warn!(
+                    run_id = %event.run_id,
+                    "workflow lifecycle event requires backpressured delivery"
+                );
+            }
+            EventMsg::WorkflowProgress(event) => {
+                self.workflow_notifications.progress(event);
+            }
+            EventMsg::WorkflowCompleted(event) => {
+                tracing::warn!(
+                    run_id = %event.run_id,
+                    "workflow lifecycle event requires backpressured delivery"
+                );
+            }
             msg => {
                 tracing::debug!(event_id = %event.id, ?msg, "dropping unsupported extension event");
             }
         }
+    }
+
+    fn emit_and_wait(&self, event: Event) -> ExtensionEventDeliveryFuture<'_> {
+        let idempotency_key = event.id.clone();
+        match event.msg {
+            EventMsg::WorkflowStarted(event) => {
+                let workflow_notifications = self.workflow_notifications.clone();
+                Box::pin(async move { workflow_notifications.started(event).await })
+            }
+            EventMsg::WorkflowCompleted(event) => {
+                let workflow_notifications = self.workflow_notifications.clone();
+                Box::pin(async move { workflow_notifications.completed(event).await })
+            }
+            msg => {
+                self.emit(Event { id: event.id, msg });
+                Box::pin(std::future::ready(ExtensionEventDelivery::Retryable {
+                    idempotency_key,
+                }))
+            }
+        }
+    }
+
+    fn wait_for_delivery_availability(
+        &self,
+        thread_id: ThreadId,
+    ) -> Option<codex_extension_api::ExtensionEventAvailabilityFuture<'_>> {
+        Some(Box::pin(
+            self.thread_state_manager
+                .wait_for_new_thread_subscriber(thread_id),
+        ))
     }
 
     fn emit_warning(&self, warning: ExtensionWarning) {

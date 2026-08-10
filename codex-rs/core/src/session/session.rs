@@ -30,6 +30,7 @@ use codex_protocol::protocol::TurnEnvironmentSelections;
 use codex_protocol::security_risk::SecurityRiskScore;
 use codex_skills::SkillError;
 use std::sync::OnceLock;
+use std::sync::atomic::AtomicBool;
 use tokio::sync::Semaphore;
 
 /// Context for an initialized model agent
@@ -65,6 +66,7 @@ pub(crate) struct Session {
     pub(crate) services: SessionServices,
     pub(super) git_enrichment_policy: GitEnrichmentPolicy,
     pub(super) fork_persistence: ForkPersistence,
+    pub(super) closing: AtomicBool,
     pub(super) next_internal_sub_id: AtomicU64,
 }
 
@@ -646,6 +648,7 @@ impl Session {
         environment_selections: &[TurnEnvironmentSelection],
         config: Arc<Config>,
         user_instructions: Option<codex_extension_api::UserInstructions>,
+        frozen_project_instructions: Option<Arc<crate::LoadedAgentsMd>>,
         installation_id: String,
         auth_manager: Arc<AuthManager>,
         models_manager: SharedModelsManager,
@@ -1169,7 +1172,10 @@ impl Session {
                 &session_configuration.inferred_environment_config(),
             );
             let resolved_environments = turn_environments.snapshot().await;
-            let agents_md_manager = Arc::new(AgentsMdManager::new(user_instructions));
+            let agents_md_manager = Arc::new(match frozen_project_instructions {
+                Some(loaded) => AgentsMdManager::new_frozen(user_instructions, Some(loaded)),
+                None => AgentsMdManager::new(user_instructions),
+            });
             let plugin_skill_warmup = warm_plugins_and_skills_for_session_init(
                 Arc::clone(&config),
                 Arc::clone(&plugins_manager),
@@ -1448,6 +1454,7 @@ impl Session {
                 services,
                 git_enrichment_policy,
                 fork_persistence,
+                closing: AtomicBool::new(false),
                 next_internal_sub_id: AtomicU64::new(0),
             });
             if let Some(network_policy_decider_session) = network_policy_decider_session {

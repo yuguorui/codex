@@ -24,6 +24,9 @@ use codex_protocol::request_permissions::RequestPermissionsResponse;
 use tokio::sync::Mutex;
 use tokio::sync::mpsc;
 use tokio::sync::oneshot;
+use tokio::time::Duration;
+use tokio::time::Instant;
+use tokio::time::timeout_at;
 use tracing::Instrument;
 use tracing::Span;
 use tracing::warn;
@@ -34,6 +37,7 @@ pub(crate) use codex_app_server_transport::ConnectionId;
 pub(crate) use codex_app_server_transport::OutgoingError;
 pub(crate) use codex_app_server_transport::OutgoingMessage;
 pub(crate) use codex_app_server_transport::OutgoingResponse;
+pub(crate) use codex_app_server_transport::OutgoingWriteResult;
 pub(crate) use codex_app_server_transport::QueuedOutgoingMessage;
 
 #[cfg(test)]
@@ -93,12 +97,34 @@ pub(crate) enum OutgoingEnvelope {
     ToConnection {
         connection_id: ConnectionId,
         message: OutgoingMessage,
-        write_complete_tx: Option<oneshot::Sender<()>>,
+        write_complete_tx: Option<oneshot::Sender<OutgoingWriteResult>>,
     },
     Broadcast {
         message: OutgoingMessage,
     },
 }
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum OutgoingDelivery {
+    Written,
+    NotTarget,
+    Retryable,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) struct OutgoingSubscriberDelivery {
+    pub(crate) connection_id: ConnectionId,
+    pub(crate) outcome: OutgoingDelivery,
+}
+
+#[derive(Debug, Eq, PartialEq)]
+pub(crate) struct OutgoingFanoutDelivery {
+    pub(crate) subscribers: Vec<OutgoingSubscriberDelivery>,
+    pub(crate) truncated: bool,
+}
+
+pub(crate) const TRACKED_FANOUT_CAPACITY: usize = 32;
+pub(crate) const TRACKED_WRITE_ACK_TIMEOUT: Duration = Duration::from_secs(5);
 
 /// Sends messages to the client and manages request callbacks.
 pub(crate) struct OutgoingMessageSender {
@@ -650,6 +676,75 @@ impl OutgoingMessageSender {
             warn!("failed to send server notification to client: {err:?}");
         }
         write_complete_rx.await.is_ok()
+    }
+
+    pub(crate) async fn try_send_server_notification_to_connections_with_timeout(
+        &self,
+        connection_ids: &[ConnectionId],
+        notification: ServerNotification,
+        write_ack_timeout: Duration,
+    ) -> OutgoingFanoutDelivery {
+        self.try_send_server_notification_to_connections_until(
+            connection_ids,
+            notification,
+            Instant::now() + write_ack_timeout,
+        )
+        .await
+    }
+
+    pub(crate) async fn try_send_server_notification_to_connections_until(
+        &self,
+        connection_ids: &[ConnectionId],
+        notification: ServerNotification,
+        deadline: Instant,
+    ) -> OutgoingFanoutDelivery {
+        tracing::trace!("app-server event: {notification}");
+        if connection_ids.is_empty() {
+            return OutgoingFanoutDelivery {
+                subscribers: Vec::new(),
+                truncated: false,
+            };
+        }
+        self.analytics_events_client
+            .track_notification(&notification);
+        let outgoing_message = timestamped_server_notification(notification);
+        let attempted = connection_ids.len().min(TRACKED_FANOUT_CAPACITY);
+        let mut delivery = OutgoingFanoutDelivery {
+            subscribers: Vec::with_capacity(attempted),
+            truncated: connection_ids.len() > attempted,
+        };
+        let mut write_completions = Vec::with_capacity(attempted);
+        for connection_id in connection_ids.iter().take(attempted) {
+            let (write_complete_tx, write_complete_rx) = oneshot::channel();
+            if self
+                .sender
+                .try_send(OutgoingEnvelope::ToConnection {
+                    connection_id: *connection_id,
+                    message: outgoing_message.clone(),
+                    write_complete_tx: Some(write_complete_tx),
+                })
+                .is_err()
+            {
+                delivery.subscribers.push(OutgoingSubscriberDelivery {
+                    connection_id: *connection_id,
+                    outcome: OutgoingDelivery::Retryable,
+                });
+                continue;
+            }
+            write_completions.push((*connection_id, write_complete_rx));
+        }
+        for (connection_id, write_complete) in write_completions {
+            let outcome = match timeout_at(deadline, write_complete).await {
+                Ok(Ok(OutgoingWriteResult::Written)) => OutgoingDelivery::Written,
+                Ok(Ok(OutgoingWriteResult::NotTarget)) => OutgoingDelivery::NotTarget,
+                Ok(Err(_)) | Err(_) => OutgoingDelivery::Retryable,
+            };
+            delivery.subscribers.push(OutgoingSubscriberDelivery {
+                connection_id,
+                outcome,
+            });
+        }
+        delivery
     }
 
     pub(crate) async fn send_error(
@@ -1247,7 +1342,7 @@ mod tests {
         );
         write_complete_tx
             .expect("write completion sender should be attached")
-            .send(())
+            .send(OutgoingWriteResult::Written)
             .expect("receiver should still be waiting");
 
         timeout(Duration::from_secs(1), send_task)

@@ -3,6 +3,7 @@ use crate::context::ContextualUserFragment;
 use crate::context::InternalContextSource;
 use crate::context::InternalModelContextFragment;
 use crate::context::SubagentNotification;
+use crate::context::WorkflowNotification;
 use codex_protocol::items::HookPromptFragment;
 use codex_protocol::items::build_hook_prompt_message;
 use codex_protocol::models::ResponseItem;
@@ -67,6 +68,13 @@ fn renders_agents_instructions_without_directory_header() {
 fn detects_subagent_notification_fragment_case_insensitively() {
     assert!(SubagentNotification::matches_text(
         "<SUBAGENT_NOTIFICATION>{}</subagent_notification>"
+    ));
+}
+
+#[test]
+fn detects_workflow_notification_fragment_case_insensitively() {
+    assert!(WorkflowNotification::matches_text(
+        "<WORKFLOW_NOTIFICATION>{}</workflow_notification>"
     ));
 }
 

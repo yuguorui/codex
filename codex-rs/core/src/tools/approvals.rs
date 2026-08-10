@@ -15,6 +15,7 @@ use crate::mcp_tool_call::request_mcp_tool_user_approval;
 use crate::sandboxing::SandboxPermissions;
 use crate::session::session::Session;
 use crate::session::turn_context::TurnContext;
+use crate::tools::events::truncate_rejection_message;
 use crate::tools::flat_tool_name;
 use crate::tools::hook_names::HookToolName;
 use crate::tools::runtimes::apply_patch::ApplyPatchApprovalKey;
@@ -41,15 +42,21 @@ use codex_protocol::protocol::FileChange;
 use codex_protocol::protocol::NetworkPolicyRuleAction;
 use codex_protocol::protocol::ReviewDecision;
 use codex_protocol::request_permissions::RequestPermissionProfile;
+use codex_tools::ToolApprovalDenialSource;
+use codex_tools::ToolApprovalOutcome;
+use codex_tools::ToolApprovalRequest;
 use codex_tools::ToolName;
 use codex_utils_absolute_path::AbsolutePathBuf;
 use codex_utils_path_uri::PathUri;
+use codex_utils_string::truncate_middle_with_token_budget;
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
 use tokio_util::sync::CancellationToken;
 use tracing::error;
 use tracing::warn;
+
+const EXTENSION_REJECTION_MAX_TOKENS: usize = 800;
 
 #[derive(Clone)]
 pub(crate) struct ApprovalContext {
@@ -116,6 +123,14 @@ pub(crate) enum ApprovalAction {
         allow_session_remember: bool,
         allow_persistent_approval: bool,
     },
+    ExtensionTool {
+        id: String,
+        tool_name: String,
+        hook_tool_name: HookToolName,
+        prompt: ToolApprovalRequest,
+        action: serde_json::Value,
+        artifact: Option<codex_tools::ToolApprovalArtifact>,
+    },
     NetworkAccess {
         id: String,
         turn_id: String,
@@ -172,6 +187,14 @@ impl ApprovalAction {
                     .clone()
                     .unwrap_or_else(|| serde_json::Value::Object(serde_json::Map::new())),
             },
+            Self::ExtensionTool {
+                hook_tool_name,
+                action,
+                ..
+            } => PermissionRequestPayload {
+                tool_name: hook_tool_name.clone(),
+                tool_input: action.clone(),
+            },
             Self::NetworkAccess {
                 hook_command,
                 target,
@@ -216,6 +239,7 @@ impl ApprovalAction {
             #[cfg(unix)]
             Self::Execve { .. } => Vec::new(),
             Self::McpToolCall { .. }
+            | Self::ExtensionTool { .. }
             | Self::NetworkAccess { .. }
             | Self::RequestPermissions { .. } => Vec::new(),
             Self::ApplyPatch {
@@ -235,7 +259,9 @@ impl ApprovalAction {
         }
     }
 
-    fn into_guardian_request(self) -> std::io::Result<crate::guardian::GuardianApprovalRequest> {
+    pub(super) fn into_guardian_request(
+        self,
+    ) -> std::io::Result<crate::guardian::GuardianApprovalRequest> {
         Ok(match self {
             Self::ExecCommand {
                 id,
@@ -315,6 +341,39 @@ impl ApprovalAction {
                 tool_description,
                 annotations,
             },
+            Self::ExtensionTool {
+                id,
+                tool_name,
+                action,
+                artifact,
+                ..
+            } => {
+                let Some(artifact) = artifact else {
+                    return Err(std::io::Error::new(
+                        std::io::ErrorKind::InvalidInput,
+                        "extension automatic review requires a content-addressed artifact",
+                    ));
+                };
+                if !artifact.has_valid_sha256() {
+                    return Err(std::io::Error::new(
+                        std::io::ErrorKind::InvalidInput,
+                        "extension approval artifact failed SHA-256 verification",
+                    ));
+                }
+                let artifact_action: serde_json::Value =
+                    serde_json::from_str(artifact.contents()).map_err(std::io::Error::other)?;
+                if artifact_action != action {
+                    return Err(std::io::Error::new(
+                        std::io::ErrorKind::InvalidInput,
+                        "extension approval artifact does not match the requested action",
+                    ));
+                }
+                crate::guardian::GuardianApprovalRequest::ExtensionTool {
+                    id,
+                    tool_name,
+                    artifact: crate::guardian::GuardianApprovalArtifact::new(artifact),
+                }
+            }
             Self::NetworkAccess {
                 id,
                 turn_id,
@@ -433,6 +492,50 @@ impl ApprovalResolution {
             decision => Ok(decision),
         }
     }
+
+    fn into_extension_outcome(self, model_info: &ModelInfo) -> ToolApprovalOutcome {
+        let denial_source = match self.source {
+            ApprovalResolutionSource::Hook => ToolApprovalDenialSource::Configuration,
+            ApprovalResolutionSource::Guardian => ToolApprovalDenialSource::AutomaticReviewer,
+            ApprovalResolutionSource::User => ToolApprovalDenialSource::User,
+        };
+        match self.decision {
+            ReviewDecision::Approved
+            | ReviewDecision::ApprovedExecpolicyAmendment { .. }
+            | ReviewDecision::ApprovedForSession
+            | ReviewDecision::ApprovedMcpPolicyAmendment => ToolApprovalOutcome::Approved,
+            ReviewDecision::NetworkPolicyAmendment {
+                network_policy_amendment,
+            } => match network_policy_amendment.action {
+                NetworkPolicyRuleAction::Allow => ToolApprovalOutcome::Approved,
+                NetworkPolicyRuleAction::Deny => ToolApprovalOutcome::Denied {
+                    rejection: "approval denied by network policy".to_string(),
+                    source: denial_source,
+                },
+            },
+            ReviewDecision::Denied { rejection } => ToolApprovalOutcome::Denied {
+                rejection: truncate_extension_rejection(&rejection),
+                source: denial_source,
+            },
+            ReviewDecision::TimedOut => ToolApprovalOutcome::TimedOut {
+                rejection: truncate_extension_rejection(&guardian_timeout_message(model_info)),
+            },
+            ReviewDecision::Abort => {
+                let reason = match self.source {
+                    ApprovalResolutionSource::Hook => "approval was cancelled by configuration",
+                    ApprovalResolutionSource::Guardian => "automatic approval review was cancelled",
+                    ApprovalResolutionSource::User => "approval was cancelled by the user",
+                };
+                ToolApprovalOutcome::Cancelled {
+                    reason: reason.to_string(),
+                }
+            }
+        }
+    }
+}
+
+fn truncate_extension_rejection(rejection: &str) -> String {
+    truncate_middle_with_token_budget(rejection, EXTENSION_REJECTION_MAX_TOKENS).0
 }
 
 impl Session {
@@ -442,6 +545,68 @@ impl Session {
         ctx: ApprovalContext,
     ) -> Result<ReviewDecision, ToolError> {
         let is_mcp_tool_call = matches!(&action, ApprovalAction::McpToolCall { .. });
+        let is_network_approval = matches!(&action, ApprovalAction::NetworkAccess { .. });
+        let resolution = self.resolve_approval(action, &ctx).await;
+
+        if is_mcp_tool_call && resolution.decision == ReviewDecision::ApprovedMcpPolicyAmendment {
+            return Ok(resolution.decision);
+        }
+        if is_network_approval {
+            match (&resolution.decision, resolution.source) {
+                (
+                    ReviewDecision::NetworkPolicyAmendment {
+                        network_policy_amendment,
+                    },
+                    _,
+                ) if network_policy_amendment.action == NetworkPolicyRuleAction::Deny => {
+                    return Ok(resolution.decision);
+                }
+                (ReviewDecision::Abort, ApprovalResolutionSource::Guardian) => {
+                    return Err(ToolError::Rejected(
+                        "automatic approval review was cancelled".to_string(),
+                    ));
+                }
+                _ => {}
+            }
+        }
+        resolution.into_tool_result(&ctx.review_context.turn().model_info)
+    }
+
+    pub(crate) async fn request_extension_tool_approval(
+        self: &Arc<Self>,
+        action: ApprovalAction,
+        ctx: ApprovalContext,
+    ) -> ToolApprovalOutcome {
+        debug_assert!(matches!(&action, ApprovalAction::ExtensionTool { .. }));
+        self.resolve_approval(action, &ctx)
+            .await
+            .into_extension_outcome(&ctx.review_context.turn().model_info)
+    }
+
+    pub(crate) async fn request_extension_tool_user_approval(
+        self: &Arc<Self>,
+        request: ToolApprovalRequest,
+        ctx: ApprovalContext,
+    ) -> ToolApprovalOutcome {
+        let resolution = ApprovalResolution {
+            decision: request_extension_tool_user_decision(
+                self,
+                ctx.review_context.turn(),
+                &ctx.call_id,
+                &request,
+            )
+            .await,
+            source: ApprovalResolutionSource::User,
+        };
+        record_resolution(&ctx, &resolution);
+        resolution.into_extension_outcome(&ctx.review_context.turn().model_info)
+    }
+
+    async fn resolve_approval(
+        self: &Arc<Self>,
+        action: ApprovalAction,
+        ctx: &ApprovalContext,
+    ) -> ApprovalResolution {
         let is_network_approval = matches!(&action, ApprovalAction::NetworkAccess { .. });
         let permission_request_run_id = match &action {
             #[cfg(unix)]
@@ -470,34 +635,13 @@ impl Session {
                 decision: ReviewDecision::denied(message),
                 source: ApprovalResolutionSource::Hook,
             },
-            None => self.request_reviewer_approval(action, &ctx).await,
+            None => self.request_reviewer_approval(action, ctx).await,
         };
         // Network approvals record their final telemetry after validation and persistence.
         if !is_network_approval {
-            record_resolution(&ctx, &resolution);
+            record_resolution(ctx, &resolution);
         }
-        if is_mcp_tool_call && resolution.decision == ReviewDecision::ApprovedMcpPolicyAmendment {
-            return Ok(resolution.decision);
-        }
-        if is_network_approval {
-            match (&resolution.decision, resolution.source) {
-                (
-                    ReviewDecision::NetworkPolicyAmendment {
-                        network_policy_amendment,
-                    },
-                    _,
-                ) if network_policy_amendment.action == NetworkPolicyRuleAction::Deny => {
-                    return Ok(resolution.decision);
-                }
-                (ReviewDecision::Abort, ApprovalResolutionSource::Guardian) => {
-                    return Err(ToolError::Rejected(
-                        "automatic approval review was cancelled".to_string(),
-                    ));
-                }
-                _ => {}
-            }
-        }
-        resolution.into_tool_result(&ctx.review_context.turn().model_info)
+        resolution
     }
 
     async fn request_reviewer_approval(
@@ -520,8 +664,12 @@ impl Session {
 
         let decision = match reviewer {
             ApprovalReviewer::Guardian => {
-                self.request_guardian_approval(action, ctx, /*cancellation_token*/ None)
-                    .await
+                let review: std::pin::Pin<
+                    Box<dyn std::future::Future<Output = ReviewDecision> + Send + '_>,
+                > = Box::pin(
+                    self.request_guardian_approval(action, ctx, /*cancellation_token*/ None),
+                );
+                review.await
             }
             ApprovalReviewer::User => self.request_user_approval(&action, ctx).await,
         };
@@ -544,9 +692,9 @@ impl Session {
             Ok(action) => action,
             Err(err) => {
                 tracing::error!(%err, "failed to build automatic approval action");
-                return ReviewDecision::denied(
-                    "automatic approval review could not prepare the action",
-                );
+                return ReviewDecision::denied(format!(
+                    "automatic approval review could not prepare the action: {err}"
+                ));
             }
         };
 
@@ -743,6 +891,15 @@ impl Session {
                 )
                 .await
             }
+            ApprovalAction::ExtensionTool { prompt, .. } => {
+                request_extension_tool_user_decision(
+                    self,
+                    ctx.review_context.turn(),
+                    &ctx.call_id,
+                    prompt,
+                )
+                .await
+            }
             ApprovalAction::NetworkAccess {
                 environment_id,
                 command,
@@ -769,6 +926,75 @@ impl Session {
                 unreachable!("permission requests are routed directly to Guardian")
             }
         }
+    }
+}
+
+async fn request_extension_tool_user_decision(
+    session: &Session,
+    turn: &TurnContext,
+    call_id: &str,
+    request: &ToolApprovalRequest,
+) -> ReviewDecision {
+    let response = session
+        .request_user_input(
+            turn,
+            call_id.to_string(),
+            codex_protocol::request_user_input::RequestUserInputArgs {
+                questions: vec![
+                    codex_protocol::request_user_input::RequestUserInputQuestion {
+                        id: request.id.clone(),
+                        header: request.header.clone(),
+                        question: request.question.clone(),
+                        is_other: true,
+                        is_secret: false,
+                        options: Some(vec![
+                            codex_protocol::request_user_input::RequestUserInputQuestionOption {
+                                label: request.approve_label.clone(),
+                                description: "Approve this extension action.".to_string(),
+                            },
+                            codex_protocol::request_user_input::RequestUserInputQuestionOption {
+                                label: request.deny_label.clone(),
+                                description: "Do not perform this extension action.".to_string(),
+                            },
+                        ]),
+                    },
+                ],
+                is_blocking: true,
+                auto_resolution_ms: None,
+            },
+        )
+        .await;
+    let Some(answer) = response
+        .as_ref()
+        .and_then(|response| response.answers.get(&request.id))
+    else {
+        return ReviewDecision::Abort;
+    };
+    if answer
+        .answers
+        .iter()
+        .any(|answer| answer == &request.approve_label)
+    {
+        return ReviewDecision::Approved;
+    }
+    let rejection = answer
+        .answers
+        .iter()
+        .map(|answer| answer.trim())
+        .filter(|answer| !answer.is_empty() && *answer != request.deny_label.as_str())
+        .collect::<Vec<_>>()
+        .join("\n");
+    if !rejection.is_empty() {
+        return ReviewDecision::denied(truncate_rejection_message(&rejection));
+    }
+    if answer
+        .answers
+        .iter()
+        .any(|answer| answer == &request.deny_label)
+    {
+        ReviewDecision::denied("rejected by user")
+    } else {
+        ReviewDecision::Abort
     }
 }
 
