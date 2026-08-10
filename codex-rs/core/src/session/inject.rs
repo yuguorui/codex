@@ -161,6 +161,56 @@ impl Session {
         };
         self.record_conversation_items(turn_context, &items).await;
     }
+
+    /// Queues an identified item for an active turn, or durably records it while idle.
+    ///
+    /// A queued item returns `false` until a turn has recorded and flushed it. Repeated
+    /// calls with the same item ID are deduplicated in both pending input and history.
+    #[expect(
+        clippy::await_holding_invalid_type,
+        reason = "the active-turn decision and identified history insertion must remain atomic"
+    )]
+    pub(crate) async fn inject_no_new_turn_once(&self, item: ResponseItem) -> bool {
+        let Some(item_id) = item.id().cloned() else {
+            return false;
+        };
+        let mut active = self.active_turn.lock().await;
+        let already_recorded = self
+            .state
+            .lock()
+            .await
+            .history
+            .raw_items()
+            .any(|recorded| recorded.id() == Some(&item_id));
+        if already_recorded {
+            drop(active);
+            return self.flush_rollout().await.is_ok();
+        }
+        if !self
+            .input_queue
+            .reserve_identified_response_item(item_id)
+            .await
+        {
+            return false;
+        }
+        if let Some(active_turn) = active.as_mut() {
+            self.input_queue
+                .extend_pending_input_and_accept_mailbox_delivery_for_turn_state(
+                    active_turn.turn_state.as_ref(),
+                    vec![PendingTurnInput::ResponseItem(ResponseItemEnvelope::new(
+                        item,
+                    ))],
+                )
+                .await;
+            return false;
+        }
+
+        let turn_context = self.new_default_turn().await;
+        self.record_conversation_items(&turn_context, std::slice::from_ref(&item))
+            .await;
+        drop(active);
+        self.flush_rollout().await.is_ok()
+    }
 }
 
 #[cfg(test)]

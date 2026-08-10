@@ -48,6 +48,7 @@ use crate::request_processors::ThreadQueueRequestProcessor;
 use crate::request_processors::ThreadRequestProcessor;
 use crate::request_processors::TurnRequestProcessor;
 use crate::request_processors::WindowsSandboxRequestProcessor;
+use crate::request_processors::WorkflowRequestProcessor;
 use crate::request_processors::read_server_diagnostics;
 use crate::request_serialization::QueuedInitializedRequest;
 use crate::request_serialization::RequestSerializationQueueKey;
@@ -162,6 +163,7 @@ pub(crate) struct MessageProcessor {
     thread_processor: ThreadRequestProcessor,
     turn_processor: TurnRequestProcessor,
     windows_sandbox_processor: WindowsSandboxRequestProcessor,
+    workflow_processor: WorkflowRequestProcessor,
     request_serialization_queues: RequestSerializationQueues,
 }
 
@@ -312,6 +314,7 @@ impl MessageProcessor {
         let goal_service = Arc::new(GoalService::new());
         let extension_event_sink =
             app_server_extension_event_sink(outgoing.clone(), thread_state_manager.clone());
+        let mut workflow_service = None;
         let mut queue_service = None;
         let thread_manager = Arc::new_cyclic(|thread_manager| {
             queue_service = queue_store.map(|queue| {
@@ -321,6 +324,11 @@ impl MessageProcessor {
                     Arc::clone(&extension_event_sink),
                 ))
             });
+            let created_workflow_service = codex_workflow_extension::WorkflowService::new(
+                Arc::clone(&extension_event_sink),
+                thread_manager.clone(),
+            );
+            workflow_service = Some(created_workflow_service.clone());
             let manager = ThreadManager::new(
                 config.as_ref(),
                 auth_manager.clone(),
@@ -337,6 +345,7 @@ impl MessageProcessor {
                         analytics_events_client: analytics_events_client.clone(),
                         thread_manager: thread_manager.clone(),
                         goal_service: Arc::clone(&goal_service),
+                        workflow_service: created_workflow_service,
                         environment_manager: Arc::clone(&environment_manager_for_extensions),
                         executor_skill_provider: Arc::clone(&executor_skill_provider),
                         git_attribution_base_url: config.chatgpt_base_url.clone(),
@@ -365,6 +374,10 @@ impl MessageProcessor {
                 None => manager,
             }
         });
+        let workflow_service = match workflow_service {
+            Some(service) => service,
+            None => unreachable!("thread manager cyclic init must create the workflow service"),
+        };
         let models_manager = thread_manager.get_models_manager();
         let models_refresh_worker =
             crate::models_refresh_worker::spawn(&models_manager, config.http_client_factory());
@@ -506,6 +519,7 @@ impl MessageProcessor {
             Arc::clone(&skills_watcher),
             turn_cost_worker.as_ref().map(TurnCostWorker::handle),
             config_warnings,
+            workflow_service.clone(),
         );
         let turn_processor = TurnRequestProcessor::new(
             auth_manager,
@@ -521,6 +535,7 @@ impl MessageProcessor {
             thread_list_state_permit,
             Arc::clone(&skills_watcher),
             turn_cost_worker.as_ref().map(TurnCostWorker::handle),
+            workflow_service.clone(),
         );
         if let Some(startup_config) = plugin_startup_tasks {
             // Keep plugin startup warmups aligned at app-server startup.
@@ -565,6 +580,8 @@ impl MessageProcessor {
             Arc::clone(&config),
             config_manager,
         );
+        let workflow_processor =
+            WorkflowRequestProcessor::new(workflow_service, config.codex_home.clone());
 
         Self {
             outgoing,
@@ -594,6 +611,7 @@ impl MessageProcessor {
             thread_processor,
             turn_processor,
             windows_sandbox_processor,
+            workflow_processor,
             request_serialization_queues,
         }
     }
@@ -1446,6 +1464,21 @@ impl MessageProcessor {
                 self.catalog_processor
                     .experimental_feature_list(params)
                     .await
+            }
+            ClientRequest::WorkflowList { params, .. } => {
+                self.workflow_processor.list(params).await
+            }
+            ClientRequest::WorkflowApprovalArtifactRead { params, .. } => {
+                self.workflow_processor.read_approval_artifact(params).await
+            }
+            ClientRequest::WorkflowStop { params, .. } => {
+                self.workflow_processor.stop(params).await
+            }
+            ClientRequest::WorkflowAgentSkip { params, .. } => {
+                self.workflow_processor.skip_agent(params).await
+            }
+            ClientRequest::WorkflowAgentRetry { params, .. } => {
+                self.workflow_processor.retry_agent(params).await
             }
             ClientRequest::PermissionProfileList { params, .. } => {
                 self.catalog_processor.permission_profile_list(params).await
