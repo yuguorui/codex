@@ -1,0 +1,22 @@
+---
+source: tui/src/chatwidget/workflows_tests.rs
+expression: "render_view_with_height(state.detail_params(None).expect(\"workflow detail params\"),\n18,)"
+---
+
+  Review changes
+  running  Check candidate findings
+
+› 1. ■ Stop workflow    Stop all agents in this run
+     ◇ Phase 2: Verify
+  2. ○ queued           queued · 1.2K tokens · 2 tools
+  3. • finder           running · 1.2K tokens · 2 tools
+  4. ✓ verified         completed · 1.2K tokens · 2 tools
+  5. ✗ failed           failed · 1.2K tokens · 2 tools
+  6. ! blocked          blocked · 1.2K tokens · 2 tools
+  7. − skipped          skipped · 1.2K tokens · 2 tools
+
+
+
+
+
+    7 agents · 12.5K tokens · 19 tools

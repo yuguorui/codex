@@ -67,6 +67,11 @@ pub(super) fn server_notification_thread_target(
         ServerNotification::ThreadGoalCleared(notification) => {
             Some(notification.thread_id.as_str())
         }
+        ServerNotification::WorkflowStarted(notification) => Some(notification.thread_id.as_str()),
+        ServerNotification::WorkflowProgress(notification) => Some(notification.thread_id.as_str()),
+        ServerNotification::WorkflowCompleted(notification) => {
+            Some(notification.thread_id.as_str())
+        }
         ServerNotification::ThreadSettingsUpdated(notification) => {
             Some(notification.thread_id.as_str())
         }

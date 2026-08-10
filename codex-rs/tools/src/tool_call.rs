@@ -32,6 +32,31 @@ impl ConversationHistory {
 
 /// Future returned when an extension tool emits a visible turn-item lifecycle event.
 pub type TurnItemEmissionFuture<'a> = Pin<Box<dyn Future<Output = ()> + Send + 'a>>;
+pub type ToolApprovalFuture<'a> = Pin<Box<dyn Future<Output = ToolApprovalDecision> + Send + 'a>>;
+
+/// Read-only view of the token target shared by a turn and its background work.
+pub trait ToolTokenBudget: Send + Sync {
+    fn total(&self) -> u64;
+
+    fn spent(&self) -> u64;
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ToolApprovalRequest {
+    pub call_id: String,
+    pub id: String,
+    pub header: String,
+    pub question: String,
+    pub approve_label: String,
+    pub deny_label: String,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ToolApprovalDecision {
+    Approved,
+    Denied,
+    Unavailable,
+}
 
 /// Visible turn items that an extension may publish into the host lifecycle.
 #[derive(Clone, Debug)]
@@ -57,6 +82,16 @@ pub trait TurnItemEmitter: Send + Sync {
 
     /// Emits one completed visible turn item.
     fn emit_completed<'a>(&'a self, item: ExtensionTurnItem) -> TurnItemEmissionFuture<'a>;
+
+    /// Requests a host-rendered confirmation before an extension performs a sensitive action.
+    fn request_approval<'a>(&'a self, _request: ToolApprovalRequest) -> ToolApprovalFuture<'a> {
+        Box::pin(std::future::ready(ToolApprovalDecision::Unavailable))
+    }
+
+    /// Returns the host's live shared token budget when one is configured.
+    fn token_budget(&self) -> Option<Arc<dyn ToolTokenBudget>> {
+        None
+    }
 }
 
 /// Host-owned turn environment summary visible to extension tools.
