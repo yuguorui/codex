@@ -1,0 +1,782 @@
+use super::*;
+use crate::agent::WorkflowEnvironmentLocation;
+use crate::discovery::ResolvedWorkflow;
+use crate::discovery::WorkflowOrigin;
+use crate::service::WorkflowLaunchRequest;
+use codex_agent_extension::AgentRunner;
+use codex_config::LoaderOverrides;
+use codex_core::ThreadManager;
+use codex_core::config::ConfigBuilder;
+use codex_extension_api::ConversationHistory;
+use codex_extension_api::ExtensionTurnItem;
+use codex_extension_api::NoopExtensionEventSink;
+use codex_extension_api::ToolPayload;
+use codex_extension_api::TurnActivity;
+use codex_extension_api::TurnActivityFuture;
+use codex_extension_api::TurnActivitySubscription;
+use codex_extension_api::TurnItemEmissionFuture;
+use codex_extension_api::TurnItemEmitter;
+use codex_utils_absolute_path::AbsolutePathBuf;
+use codex_utils_output_truncation::TruncationPolicy;
+use codex_workflow::validate_workflow_script;
+use pretty_assertions::assert_eq;
+use serde_json::Value as JsonValue;
+use std::sync::Arc;
+use std::sync::Weak;
+use tempfile::TempDir;
+use tokio::sync::Notify;
+use tokio::time::Instant;
+use tokio::time::timeout;
+
+fn workflow_status_is_terminal(status: WorkflowTaskStatus) -> bool {
+    matches!(
+        status,
+        WorkflowTaskStatus::Completed
+            | WorkflowTaskStatus::Failed
+            | WorkflowTaskStatus::Paused
+            | WorkflowTaskStatus::Killed
+    )
+}
+
+#[test]
+fn list_is_filtered_and_hard_limited() {
+    let snapshots = vec![
+        snapshot("wf_new", /*started_at*/ 3, WorkflowTaskStatus::Running),
+        snapshot(
+            "wf_middle",
+            /*started_at*/ 2,
+            WorkflowTaskStatus::Completed,
+        ),
+        snapshot(
+            "wf_old",
+            /*started_at*/ 1,
+            WorkflowTaskStatus::Completed,
+        ),
+    ];
+
+    let output = list_workflows_output(
+        snapshots,
+        ListWorkflowsArgs {
+            limit: Some(1),
+            statuses: Some(vec![WorkflowTaskStatus::Completed]),
+            cursor: None,
+        },
+    )
+    .unwrap();
+
+    assert_eq!(output.workflows.len(), 1);
+    assert_eq!(output.workflows[0].run_id, "wf_middle");
+    assert_eq!(output.total_matched, 2);
+    assert!(output.truncated);
+    assert!(output.next_cursor.is_some());
+}
+
+#[test]
+fn list_cursor_pages_stably_without_duplicates_or_omissions() {
+    let snapshot_count = crate::service::MAX_RETAINED_TERMINAL_TASKS + 3;
+    let snapshots = (0..snapshot_count)
+        .rev()
+        .map(|index| {
+            snapshot(
+                &format!("wf_{index:03}"),
+                i64::try_from(index / 3).unwrap(),
+                WorkflowTaskStatus::Completed,
+            )
+        })
+        .collect::<Vec<_>>();
+    let mut cursor = None;
+    let mut run_ids = Vec::new();
+
+    loop {
+        let output = list_workflows_output(
+            snapshots.clone(),
+            ListWorkflowsArgs {
+                limit: Some(17),
+                statuses: Some(vec![WorkflowTaskStatus::Completed]),
+                cursor,
+            },
+        )
+        .unwrap();
+        run_ids.extend(output.workflows.into_iter().map(|workflow| workflow.run_id));
+        let Some(next_cursor) = output.next_cursor else {
+            break;
+        };
+        cursor = Some(next_cursor);
+    }
+
+    let mut expected = snapshots;
+    expected.sort_by(|left, right| {
+        right
+            .started_at
+            .cmp(&left.started_at)
+            .then_with(|| right.run_id.cmp(&left.run_id))
+    });
+    assert_eq!(
+        run_ids,
+        expected
+            .into_iter()
+            .map(|snapshot| snapshot.run_id)
+            .collect::<Vec<_>>()
+    );
+}
+
+#[test]
+fn list_rejects_an_invalid_cursor() {
+    let error = list_workflows_output(
+        Vec::new(),
+        ListWorkflowsArgs {
+            limit: None,
+            statuses: None,
+            cursor: Some("not-a-cursor".to_string()),
+        },
+    )
+    .unwrap_err();
+
+    assert_eq!(error, "invalid workflow list cursor");
+}
+
+#[test]
+fn collections_reject_empty_duplicate_and_oversized_inputs() {
+    assert!(validate_run_ids(&[]).is_err());
+    assert!(validate_run_ids(&["wf_1".to_string(), "wf_1".to_string()]).is_err());
+    assert!(
+        validate_run_ids(
+            &(0..=MAX_WORKFLOW_COLLECTION_ITEMS)
+                .map(|index| format!("wf_{index}"))
+                .collect::<Vec<_>>()
+        )
+        .is_err()
+    );
+    assert!(
+        list_workflows_output(
+            Vec::new(),
+            ListWorkflowsArgs {
+                limit: Some(MAX_WORKFLOW_COLLECTION_ITEMS + 1),
+                statuses: None,
+                cursor: None,
+            },
+        )
+        .is_err()
+    );
+}
+
+#[test]
+fn wait_output_preserves_input_order_and_mode_condition() {
+    let outcomes = vec![
+        WorkflowWaitOutcome {
+            snapshot: snapshot("wf_1", /*started_at*/ 2, WorkflowTaskStatus::Completed),
+            timed_out: false,
+        },
+        WorkflowWaitOutcome {
+            snapshot: snapshot("wf_2", /*started_at*/ 1, WorkflowTaskStatus::Running),
+            timed_out: true,
+        },
+    ];
+
+    let all = wait_workflows_output(
+        WaitMode::All,
+        outcomes.clone(),
+        /*timeout_ms*/ 100,
+        /*interrupted_by_user_input*/ false,
+    );
+    let any = wait_workflows_output(
+        WaitMode::Any,
+        outcomes,
+        /*timeout_ms*/ 100,
+        /*interrupted_by_user_input*/ false,
+    );
+
+    assert!(!all.condition_met);
+    assert!(all.timed_out);
+    assert_eq!(
+        all.workflows
+            .iter()
+            .map(|workflow| workflow.run_id.as_str())
+            .collect::<Vec<_>>(),
+        vec!["wf_1", "wf_2"]
+    );
+    assert!(any.condition_met);
+    assert!(!any.timed_out);
+    assert!(!any.interrupted_by_user_input);
+}
+
+#[tokio::test(start_paused = true)]
+async fn wait_all_uses_one_shared_deadline_and_preserves_input_order() {
+    let fixture = WaitFixture::new().await;
+    let first_run_id = fixture.launch_pending("shared-deadline-first").await;
+    let second_run_id = fixture.launch_pending("shared-deadline-second").await;
+    let timeout_duration = Duration::from_millis(250);
+    let started = Instant::now();
+
+    let output = wait_for_workflows(
+        fixture.service.clone(),
+        fixture.thread_id,
+        vec![second_run_id.clone(), first_run_id.clone()],
+        WaitMode::All,
+        timeout_duration,
+        /*timeout_ms*/ 250,
+    )
+    .await
+    .unwrap();
+
+    assert_eq!(Instant::now().duration_since(started), timeout_duration);
+    assert_eq!(
+        output,
+        WaitWorkflowsOutput {
+            mode: WaitMode::All,
+            condition_met: false,
+            timed_out: true,
+            interrupted_by_user_input: false,
+            timeout_ms: 250,
+            workflows: vec![
+                WaitedWorkflowStatus {
+                    run_id: second_run_id.clone(),
+                    status: WorkflowTaskStatus::Running,
+                    timed_out: true,
+                    result_available: false,
+                },
+                WaitedWorkflowStatus {
+                    run_id: first_run_id.clone(),
+                    status: WorkflowTaskStatus::Running,
+                    timed_out: true,
+                    result_available: false,
+                },
+            ],
+        }
+    );
+
+    fixture
+        .service
+        .stop(fixture.thread_id, &first_run_id)
+        .await
+        .unwrap();
+    fixture
+        .service
+        .stop(fixture.thread_id, &second_run_id)
+        .await
+        .unwrap();
+}
+
+#[tokio::test]
+async fn wait_any_returns_the_first_terminal_run_without_waiting_for_siblings() {
+    let fixture = WaitFixture::new().await;
+    let first_run_id = fixture.launch_pending("wait-any-first").await;
+    let second_run_id = fixture.launch_pending("wait-any-second").await;
+    let wait_run_ids = vec![first_run_id.clone(), second_run_id.clone()];
+    let thread_id = fixture.thread_id;
+    let waiter = tokio::spawn({
+        let service = fixture.service.clone();
+        async move {
+            wait_for_workflows(
+                service,
+                thread_id,
+                wait_run_ids,
+                WaitMode::Any,
+                Duration::from_secs(5),
+                /*timeout_ms*/ 5_000,
+            )
+            .await
+        }
+    });
+    tokio::task::yield_now().await;
+    fixture
+        .service
+        .stop(fixture.thread_id, &second_run_id)
+        .await
+        .unwrap();
+
+    let output = waiter.await.unwrap().unwrap();
+
+    assert_eq!(
+        output,
+        WaitWorkflowsOutput {
+            mode: WaitMode::Any,
+            condition_met: true,
+            timed_out: false,
+            interrupted_by_user_input: false,
+            timeout_ms: 5_000,
+            workflows: vec![WaitedWorkflowStatus {
+                run_id: second_run_id.clone(),
+                status: WorkflowTaskStatus::Killed,
+                timed_out: false,
+                result_available: true,
+            }],
+        }
+    );
+    fixture
+        .service
+        .stop(fixture.thread_id, &first_run_id)
+        .await
+        .unwrap();
+}
+
+#[tokio::test]
+async fn wait_all_ignores_non_user_activity_after_first_completion() {
+    let fixture = WaitFixture::new().await;
+    let first_run_id = fixture.launch_pending("notification-first").await;
+    let second_run_id = fixture.launch_pending("notification-second").await;
+    let activity = Arc::new(ControlledTurnActivity::default());
+    let payload = ToolPayload::Function {
+        arguments: json!({
+            "runIds": [&first_run_id, &second_run_id],
+            "mode": "all",
+            "timeoutMs": 5_000,
+        })
+        .to_string(),
+    };
+    let output_payload = payload.clone();
+    let executor = WaitWorkflowsToolExecutor::new(
+        fixture.thread_id,
+        fixture.config.clone(),
+        fixture.service.clone(),
+    );
+    let emitter = Arc::new(ActivityEmitter {
+        activity: Arc::clone(&activity),
+    });
+    let wait = tokio::spawn(async move {
+        executor
+            .handle(ToolCall {
+                turn_id: "turn-notification-wait".to_string(),
+                call_id: "call-notification-wait".to_string(),
+                tool_name: ToolName::plain(WAIT_WORKFLOWS_TOOL_NAME),
+                model: "test-model".to_string(),
+                codex_turn_metadata: None,
+                truncation_policy: TruncationPolicy::Bytes(1_024),
+                conversation_history: ConversationHistory::default(),
+                turn_item_emitter: emitter,
+                environments: Vec::new(),
+                agent_configuration: None,
+                payload,
+            })
+            .await
+    });
+
+    timeout(Duration::from_secs(1), activity.wait_entered.notified())
+        .await
+        .expect("WaitWorkflows should enter its activity subscription");
+    fixture
+        .service
+        .stop(fixture.thread_id, &first_run_id)
+        .await
+        .unwrap();
+    let first = fixture
+        .service
+        .wait_for_terminal(fixture.thread_id, &first_run_id, Duration::from_secs(5))
+        .await
+        .unwrap();
+    assert_eq!(first.snapshot.status, WorkflowTaskStatus::Killed);
+
+    activity.signal_non_user_wake();
+    timeout(
+        Duration::from_secs(1),
+        activity.non_user_wake_processed.notified(),
+    )
+    .await
+    .expect("activity subscription should process the non-user wake");
+    assert!(!wait.is_finished());
+
+    fixture
+        .service
+        .stop(fixture.thread_id, &second_run_id)
+        .await
+        .unwrap();
+    let output = timeout(Duration::from_secs(5), wait)
+        .await
+        .expect("WaitWorkflows should finish after the second completion")
+        .expect("WaitWorkflows task should not panic")
+        .expect("WaitWorkflows should succeed");
+    let value = output.code_mode_result(&output_payload);
+    assert_eq!(value["conditionMet"], true);
+    assert_eq!(value["timedOut"], false);
+    assert_eq!(value["interruptedByUserInput"], false);
+    assert_eq!(
+        value["workflows"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|workflow| (
+                workflow["runId"].as_str().unwrap(),
+                workflow["status"].as_str().unwrap(),
+            ))
+            .collect::<Vec<_>>(),
+        vec![
+            (first_run_id.as_str(), "killed"),
+            (second_run_id.as_str(), "killed"),
+        ]
+    );
+}
+
+#[test]
+fn interrupted_multi_wait_preserves_all_run_statuses_without_timeout() {
+    let outcomes = vec![
+        WorkflowWaitOutcome {
+            snapshot: snapshot("wf_1", /*started_at*/ 2, WorkflowTaskStatus::Running),
+            timed_out: true,
+        },
+        WorkflowWaitOutcome {
+            snapshot: snapshot("wf_2", /*started_at*/ 1, WorkflowTaskStatus::Running),
+            timed_out: true,
+        },
+    ];
+
+    let output = wait_workflows_output(
+        WaitMode::All,
+        outcomes,
+        /*timeout_ms*/ 100,
+        /*interrupted_by_user_input*/ true,
+    );
+
+    assert!(!output.condition_met);
+    assert!(!output.timed_out);
+    assert!(output.interrupted_by_user_input);
+    assert!(output.workflows.iter().all(|workflow| !workflow.timed_out));
+    assert_eq!(
+        output
+            .workflows
+            .iter()
+            .map(|workflow| workflow.run_id.as_str())
+            .collect::<Vec<_>>(),
+        vec!["wf_1", "wf_2"]
+    );
+}
+
+#[test]
+fn paused_is_terminal_for_waits_without_exposing_a_result() {
+    let paused = snapshot(
+        "wf_paused",
+        /*started_at*/ 1,
+        WorkflowTaskStatus::Paused,
+    );
+    let status = WorkflowStatusItem::from_snapshot(&paused);
+    let output = wait_workflows_output(
+        WaitMode::All,
+        vec![WorkflowWaitOutcome {
+            snapshot: paused,
+            timed_out: false,
+        }],
+        /*timeout_ms*/ 100,
+        /*interrupted_by_user_input*/ false,
+    );
+
+    assert!(!status.result_available);
+    assert!(output.condition_met);
+    assert!(!output.timed_out);
+    assert_eq!(output.workflows.len(), 1);
+    assert_eq!(output.workflows[0].status, WorkflowTaskStatus::Paused);
+    assert!(!output.workflows[0].result_available);
+}
+
+#[test]
+fn maximum_multi_workflow_outputs_stay_within_the_hard_bound() {
+    let outcomes = (0..MAX_WORKFLOW_COLLECTION_ITEMS)
+        .map(|index| WorkflowWaitOutcome {
+            snapshot: snapshot(
+                &format!("wf_{index:02}"),
+                i64::try_from(index).unwrap(),
+                WorkflowTaskStatus::Running,
+            ),
+            timed_out: true,
+        })
+        .collect();
+
+    let output = wait_workflows_output(
+        WaitMode::All,
+        outcomes,
+        /*timeout_ms*/ 100,
+        /*interrupted_by_user_input*/ false,
+    );
+
+    assert_eq!(output.workflows.len(), MAX_WORKFLOW_COLLECTION_ITEMS);
+    assert!(serde_json::to_vec(&output).unwrap().len() <= MODEL_TOOL_OUTPUT_MAX_BYTES);
+}
+
+#[tokio::test]
+async fn specs_describe_server_sized_pages_without_capacity_values() {
+    let mut config = ConfigBuilder::default()
+        .loader_overrides(LoaderOverrides::without_managed_config_for_tests())
+        .build()
+        .await
+        .unwrap();
+    config.multi_agent_v2.default_wait_timeout_ms = 123;
+
+    let ToolSpec::Function(list_spec) = list_workflows_tool_spec() else {
+        panic!("ListWorkflows should be a function tool");
+    };
+    let ToolSpec::Function(agent_list_spec) = list_workflow_agents_tool_spec() else {
+        panic!("ListWorkflowAgents should be a function tool");
+    };
+    let ToolSpec::Function(wait_spec) = wait_workflows_tool_spec(&config) else {
+        panic!("WaitWorkflows should be a function tool");
+    };
+
+    assert_eq!(list_spec.name, LIST_WORKFLOWS_TOOL_NAME);
+    let list_properties = list_spec.parameters.properties.unwrap();
+    let limit_description = list_properties["limit"].description.as_deref().unwrap();
+    assert!(limit_description.contains("server-sized list page"));
+    assert!(!limit_description.contains(&MAX_WORKFLOW_COLLECTION_ITEMS.to_string()));
+    assert_eq!(agent_list_spec.name, LIST_WORKFLOW_AGENTS_TOOL_NAME);
+    assert_eq!(
+        agent_list_spec.parameters.required,
+        Some(vec!["runId".to_string()])
+    );
+    assert_eq!(wait_spec.name, WAIT_WORKFLOWS_TOOL_NAME);
+    assert_eq!(
+        wait_spec.parameters.required,
+        Some(vec!["runIds".to_string()])
+    );
+    let wait_properties = wait_spec.parameters.properties.unwrap();
+    let timeout_description = wait_properties["timeoutMs"].description.as_deref().unwrap();
+    assert!(timeout_description.contains("configured default"));
+    assert!(!timeout_description.contains("123"));
+}
+
+#[test]
+fn status_text_is_bounded() {
+    let mut snapshot = snapshot("wf_long", /*started_at*/ 1, WorkflowTaskStatus::Failed);
+    snapshot.summary = "summary ".repeat(1_000);
+    snapshot.error = Some("error ".repeat(1_000));
+
+    let status = WorkflowStatusItem::from_snapshot(&snapshot);
+
+    assert!(status.summary.len() < snapshot.summary.len());
+    assert!(status.error.unwrap().len() < snapshot.error.unwrap().len());
+}
+
+#[test]
+fn workflow_agent_status_exposes_real_agent_and_invocation_ids() {
+    let status = WorkflowAgentStatus::from(WorkflowAgentProgress {
+        invocation_id: "phase/inspect/0".to_string(),
+        index: 3,
+        label: "inspect".to_string(),
+        phase_index: Some(1),
+        phase_title: Some("Inspect".to_string()),
+        agent_id: Some("0198-agent-id".to_string()),
+        model: None,
+        fallback_model: None,
+        isolation: None,
+        state: WorkflowAgentState::Done,
+        activity: None,
+        blocked: false,
+        skipped: false,
+        awaiting_decision: false,
+        cached: false,
+        attempt: 0,
+        error: None,
+        tokens: Some(42),
+        tool_calls: Some(2),
+        duration_ms: Some(100),
+        result_preview: None,
+        prompt_preview: String::new(),
+        queued_at: 1,
+        started_at: Some(2),
+        last_progress_at: 3,
+    });
+
+    assert_eq!(
+        status,
+        WorkflowAgentStatus {
+            invocation_id: "phase/inspect/0".to_string(),
+            index: 3,
+            agent_id: Some("0198-agent-id".to_string()),
+            label: "inspect".to_string(),
+            phase_index: Some(1),
+            phase_title: Some("Inspect".to_string()),
+            state: WorkflowAgentState::Done,
+            blocked: false,
+            skipped: false,
+            awaiting_decision: false,
+            cached: false,
+            attempt: 0,
+            error: None,
+            tokens: Some(42),
+            tool_calls: Some(2),
+            duration_ms: Some(100),
+        }
+    );
+}
+
+#[test]
+fn list_truncates_the_collection_before_the_model_output_limit() {
+    let snapshots = (0..MAX_WORKFLOW_COLLECTION_ITEMS)
+        .map(|index| {
+            let mut snapshot = snapshot(
+                &format!("wf_{index:02}"),
+                i64::try_from(index).unwrap(),
+                WorkflowTaskStatus::Failed,
+            );
+            snapshot.workflow_name = "\u{0000}\"\\".repeat(200);
+            snapshot.title = Some("\u{0000}\"\\".repeat(200));
+            snapshot.summary = "\u{0000}\"\\".repeat(200);
+            snapshot.error = Some("\u{0000}\"\\".repeat(200));
+            snapshot
+        })
+        .collect();
+
+    let output = list_workflows_output(
+        snapshots,
+        ListWorkflowsArgs {
+            limit: Some(MAX_WORKFLOW_COLLECTION_ITEMS),
+            statuses: None,
+            cursor: None,
+        },
+    )
+    .unwrap();
+
+    assert!(output.truncated);
+    assert!(serde_json::to_vec(&output).unwrap().len() <= MODEL_TOOL_OUTPUT_MAX_BYTES);
+}
+
+#[test]
+fn list_and_wait_parse_errors_are_bounded_before_reaching_the_model() {
+    let arguments = format!(r#"{{"{}":true}}"#, "unknown".repeat(2_000));
+
+    for (tool_name, error) in [
+        (
+            LIST_WORKFLOWS_TOOL_NAME,
+            parse_arguments::<ListWorkflowsArgs>(LIST_WORKFLOWS_TOOL_NAME, &arguments).unwrap_err(),
+        ),
+        (
+            WAIT_WORKFLOWS_TOOL_NAME,
+            parse_arguments::<WaitWorkflowsArgs>(WAIT_WORKFLOWS_TOOL_NAME, &arguments).unwrap_err(),
+        ),
+    ] {
+        let FunctionCallError::RespondToModel(message) = error else {
+            panic!("{tool_name} should return a model-visible parse error");
+        };
+        assert!(message.starts_with(&format!("invalid {tool_name} input:")));
+        assert!(message.len() <= crate::workflow_result_tool::MODEL_ERROR_MAX_BYTES);
+        assert!(message.ends_with("...[truncated]"));
+    }
+}
+
+fn snapshot(run_id: &str, started_at: i64, status: WorkflowTaskStatus) -> WorkflowTaskSnapshot {
+    let root = AbsolutePathBuf::try_from(std::env::temp_dir()).unwrap();
+    WorkflowTaskSnapshot {
+        thread_id: "thread".to_string(),
+        turn_id: "turn".to_string(),
+        task_id: format!("task-{run_id}"),
+        run_id: run_id.to_string(),
+        workflow_name: "status-test".to_string(),
+        title: None,
+        status,
+        summary: "summary".to_string(),
+        transcript_dir: root.join("transcript"),
+        script_path: root.join("workflow.js"),
+        args: JsonValue::Null,
+        result_artifact: None,
+        output_file: root.join("workflow.json"),
+        progress: Vec::new(),
+        progress_version: 0,
+        usage: WorkflowUsage::default(),
+        failures: Vec::new(),
+        error: None,
+        started_at,
+        completed_at: workflow_status_is_terminal(status).then_some(started_at + 1),
+        script_sha256: "sha256".to_string(),
+    }
+}
+
+#[derive(Default)]
+struct ControlledTurnActivity {
+    wake: Notify,
+    wait_entered: Notify,
+    non_user_wake_processed: Notify,
+}
+
+impl ControlledTurnActivity {
+    fn signal_non_user_wake(&self) {
+        self.wake.notify_one();
+    }
+}
+
+impl TurnActivitySubscription for ControlledTurnActivity {
+    fn observed(&self) -> Option<TurnActivity> {
+        None
+    }
+
+    fn wait<'a>(&'a self) -> TurnActivityFuture<'a> {
+        Box::pin(async move {
+            self.wait_entered.notify_one();
+            loop {
+                self.wake.notified().await;
+                self.non_user_wake_processed.notify_one();
+            }
+        })
+    }
+}
+
+struct ActivityEmitter {
+    activity: Arc<ControlledTurnActivity>,
+}
+
+impl TurnItemEmitter for ActivityEmitter {
+    fn emit_started<'a>(&'a self, _item: ExtensionTurnItem) -> TurnItemEmissionFuture<'a> {
+        Box::pin(std::future::ready(()))
+    }
+
+    fn emit_completed<'a>(&'a self, _item: ExtensionTurnItem) -> TurnItemEmissionFuture<'a> {
+        Box::pin(std::future::ready(()))
+    }
+
+    fn turn_activity(&self) -> Option<Arc<dyn TurnActivitySubscription>> {
+        Some(self.activity.clone())
+    }
+}
+
+struct WaitFixture {
+    _codex_home: TempDir,
+    config: Config,
+    thread_id: ThreadId,
+    service: WorkflowService,
+}
+
+impl WaitFixture {
+    async fn new() -> Self {
+        let codex_home = tempfile::tempdir().unwrap();
+        let config = ConfigBuilder::default()
+            .codex_home(codex_home.path().to_path_buf())
+            .fallback_cwd(Some(codex_home.path().to_path_buf()))
+            .loader_overrides(LoaderOverrides::without_managed_config_for_tests())
+            .build()
+            .await
+            .unwrap();
+        let thread_id = ThreadId::from_string("11111111-1111-4111-8111-111111111111").unwrap();
+        Self {
+            _codex_home: codex_home,
+            config,
+            thread_id,
+            service: WorkflowService::new(Arc::new(NoopExtensionEventSink), Weak::new()),
+        }
+    }
+
+    async fn launch_pending(&self, name: &str) -> String {
+        let source = format!(
+            "export const meta = {{ name: '{name}', description: 'wait test' }}; return new Promise(() => {{}});"
+        );
+        let script = validate_workflow_script(&source).unwrap();
+        let composition = crate::composition::FrozenWorkflowComposition::empty(&script);
+        let launch = self
+            .service
+            .launch(WorkflowLaunchRequest {
+                thread_id: self.thread_id,
+                turn_id: format!("turn-{name}"),
+                config: self.config.clone(),
+                resolved: ResolvedWorkflow {
+                    script,
+                    args: JsonValue::Null,
+                    resume_from_run_id: None,
+                    origin: WorkflowOrigin::Inline,
+                    shadows_existing: false,
+                    composition,
+                },
+                agent_runner: AgentRunner::new(Weak::<ThreadManager>::new()),
+                environments: Vec::new(),
+                captured_environments: None,
+                environment_location: WorkflowEnvironmentLocation::Local,
+                declared_inputs: Default::default(),
+            })
+            .await
+            .unwrap();
+        launch.run_id
+    }
+}

@@ -40,6 +40,7 @@ use codex_login::AuthManager;
 use codex_login::UnauthorizedRecovery;
 use codex_state::StateRuntime;
 use codex_utils_rustls_provider::ensure_rustls_crypto_provider;
+use futures::Sink;
 use futures::SinkExt;
 use futures::StreamExt;
 use futures::stream::SplitSink;
@@ -68,6 +69,35 @@ use super::RemoteControlEnrollmentState;
 use tracing::error;
 use tracing::info;
 use tracing::warn;
+
+async fn write_remote_control_payloads<S, E>(
+    websocket_writer: &mut S,
+    payloads: Vec<String>,
+    shutdown_token: &CancellationToken,
+    write_complete_tx: Option<oneshot::Sender<crate::OutgoingWriteResult>>,
+) -> io::Result<()>
+where
+    S: Sink<tungstenite::Message, Error = E> + Unpin,
+    E: std::fmt::Display,
+{
+    if payloads.is_empty() {
+        return Ok(());
+    }
+    for payload in payloads {
+        tokio::select! {
+            _ = shutdown_token.cancelled() => return Ok(()),
+            send_result = websocket_writer.send(tungstenite::Message::Text(payload.into())) => {
+                if let Err(err) = send_result {
+                    return Err(io::Error::new(ErrorKind::BrokenPipe, err.to_string()));
+                }
+            }
+        }
+    }
+    if let Some(write_complete_tx) = write_complete_tx {
+        let _ = write_complete_tx.send(crate::OutgoingWriteResult::Written);
+    }
+    Ok(())
+}
 
 pub(super) const REMOTE_CONTROL_PROTOCOL_VERSION: &str = "3";
 pub(super) const REMOTE_CONTROL_INSTALLATION_ID_HEADER: &str = "x-codex-installation-id";
@@ -1030,17 +1060,19 @@ impl RemoteControlWebsocket {
                         continue;
                     }
                 };
-                let mut payloads = Vec::with_capacity(server_envelopes.len());
-                for server_envelope in server_envelopes {
-                    let payload = match serde_json::to_string(&server_envelope) {
-                        Ok(payload) => payload,
-                        Err(err) => {
-                            error!("failed to serialize remote-control server event: {err}");
-                            continue;
-                        }
-                    };
-                    state.outbound_buffer.insert(&server_envelope);
-                    payloads.push(payload);
+                let payloads = match server_envelopes
+                    .iter()
+                    .map(serde_json::to_string)
+                    .collect::<Result<Vec<_>, _>>()
+                {
+                    Ok(payloads) => payloads,
+                    Err(err) => {
+                        error!("failed to serialize remote-control server event: {err}");
+                        continue;
+                    }
+                };
+                for server_envelope in &server_envelopes {
+                    state.outbound_buffer.insert(server_envelope);
                 }
                 state
                     .next_seq_id_by_stream
@@ -1049,19 +1081,13 @@ impl RemoteControlWebsocket {
                 (payloads, queued_server_envelope.write_complete_tx)
             };
 
-            for payload in payloads {
-                tokio::select! {
-                    _ = shutdown_token.cancelled() => return Ok(()),
-                    send_result = websocket_writer.send(tungstenite::Message::Text(payload.into())) => {
-                        if let Err(err) = send_result {
-                            return Err(io::Error::other(err));
-                        }
-                    }
-                }
-            }
-            if let Some(write_complete_tx) = write_complete_tx {
-                let _ = write_complete_tx.send(());
-            }
+            write_remote_control_payloads(
+                &mut websocket_writer,
+                payloads,
+                &shutdown_token,
+                write_complete_tx,
+            )
+            .await?;
         }
     }
 
@@ -1848,6 +1874,7 @@ mod tests {
     use codex_state::StateRuntime;
     use codex_utils_absolute_path::test_support::PathExt;
     use futures::StreamExt;
+    use futures::channel::mpsc as futures_mpsc;
     use pretty_assertions::assert_eq;
     use std::sync::Arc;
     use tempfile::TempDir;
@@ -1860,6 +1887,52 @@ mod tests {
     use tokio::time::Duration;
     use tokio::time::timeout;
     use tokio_tungstenite::accept_async;
+
+    #[tokio::test]
+    async fn tracked_write_acknowledges_only_after_all_remote_control_fragments() {
+        let (websocket_writer, mut websocket_reader) = futures_mpsc::channel(0);
+        let shutdown_token = CancellationToken::new();
+        let (write_complete_tx, mut write_complete_rx) = oneshot::channel();
+        let writer_task = tokio::spawn(async move {
+            let mut websocket_writer = websocket_writer;
+            write_remote_control_payloads(
+                &mut websocket_writer,
+                vec![
+                    "fragment-1".to_string(),
+                    "fragment-2".to_string(),
+                    "fragment-3".to_string(),
+                ],
+                &shutdown_token,
+                Some(write_complete_tx),
+            )
+            .await
+        });
+
+        for expected in ["fragment-1", "fragment-2"] {
+            let Some(tungstenite::Message::Text(actual)) = websocket_reader.next().await else {
+                panic!("expected remote-control text fragment");
+            };
+            assert_eq!(actual.to_string(), expected);
+            assert!(matches!(
+                write_complete_rx.try_recv(),
+                Err(oneshot::error::TryRecvError::Empty)
+            ));
+        }
+        let Some(tungstenite::Message::Text(actual)) = websocket_reader.next().await else {
+            panic!("expected final remote-control text fragment");
+        };
+        assert_eq!(actual.to_string(), "fragment-3");
+        assert_eq!(
+            write_complete_rx
+                .await
+                .expect("all fragments should acknowledge the write"),
+            crate::OutgoingWriteResult::Written
+        );
+        writer_task
+            .await
+            .expect("writer task should finish")
+            .expect("writer should send all fragments");
+    }
 
     // Windows Bazel CI can take longer than a few seconds for the websocket
     // client connection attempt to reach the local test listener.

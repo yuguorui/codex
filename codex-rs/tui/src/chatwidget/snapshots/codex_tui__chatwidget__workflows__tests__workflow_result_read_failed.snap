@@ -1,0 +1,5 @@
+---
+source: tui/src/chatwidget/workflows_tests.rs
+expression: visible_text(&cell.display_lines(80))
+---
+✗ Failed to read Workflow result  wf_123456789
