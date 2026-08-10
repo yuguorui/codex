@@ -10,6 +10,7 @@ use crate::environment_selection::TurnEnvironmentState;
 use crate::guardian::approval_request::guardian_request_target_item_id;
 use crate::guardian::prompt::BUNDLED_GUARDIAN_POLICY;
 use crate::guardian::prompt::BUNDLED_GUARDIAN_POLICY_TEMPLATE;
+use crate::guardian::prompt::collect_guardian_transcript_entries_excluding_call;
 use crate::guardian::prompt::guardian_policy_prompt_with_config_and_template;
 use crate::guardian::review::guardian_review_session_config;
 use crate::guardian::review::routes_approval_to_guardian_with_reviewer;
@@ -1089,6 +1090,41 @@ fn collect_guardian_transcript_entries_preserves_named_unpaired_tool_sources() {
         vec![GuardianTranscriptEntry {
             kind: GuardianTranscriptEntryKind::Tool("tool slack.notifications result".to_string()),
             text: "[non-text output]".to_string(),
+        }]
+    );
+}
+
+#[test]
+fn extension_approval_excludes_the_hash_bound_pending_call_from_transcript() {
+    let items = vec![
+        ResponseItem::FunctionCall {
+            id: None,
+            name: "Workflow".to_string(),
+            namespace: None,
+            arguments: "large action contents".repeat(1_000),
+            call_id: "pending-workflow".to_string(),
+            encrypted_function_args: None,
+            internal_chat_message_metadata_passthrough: None,
+        },
+        ResponseItem::FunctionCall {
+            id: None,
+            name: "read_file".to_string(),
+            namespace: None,
+            arguments: "{\"path\":\"README.md\"}".to_string(),
+            call_id: "earlier-read".to_string(),
+            encrypted_function_args: None,
+            internal_chat_message_metadata_passthrough: None,
+        },
+    ];
+
+    let entries =
+        collect_guardian_transcript_entries_excluding_call(&items, Some("pending-workflow"));
+
+    assert_eq!(
+        entries,
+        vec![GuardianTranscriptEntry {
+            kind: GuardianTranscriptEntryKind::Tool("tool read_file call".to_string()),
+            text: "{\"path\":\"README.md\"}".to_string(),
         }]
     );
 }

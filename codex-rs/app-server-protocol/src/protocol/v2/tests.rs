@@ -3390,6 +3390,17 @@ fn core_turn_item_into_thread_item_converts_supported_variants() {
         )),
         ThreadItem::WebSearch(expected_search_item)
     );
+    let workflow_result_read = codex_extension_items::workflow::WorkflowResultReadItem {
+        id: "read-result-1".to_string(),
+        run_id: Some("wf_123".to_string()),
+        status: codex_extension_items::workflow::WorkflowResultReadStatus::Completed,
+    };
+    assert_eq!(
+        ThreadItem::from(TurnItem::Extension(
+            codex_extension_items::ExtensionItem::WorkflowResultRead(workflow_result_read.clone(),),
+        )),
+        ThreadItem::WorkflowResultRead(workflow_result_read)
+    );
 
     let image_view_item = TurnItem::ImageView(ImageViewItem {
         id: "view-image-1".to_string(),
