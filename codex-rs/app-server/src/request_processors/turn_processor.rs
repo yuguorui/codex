@@ -1328,6 +1328,7 @@ impl TurnRequestProcessor {
             thread_id,
             thread: review_thread,
             turn_id,
+            ..
         } = self
             .agent_runner
             .start(
