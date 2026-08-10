@@ -15623,6 +15623,66 @@
           "properties": {
             "method": {
               "enum": [
+                "workflow/started"
+              ],
+              "title": "Workflow/startedNotificationMethod",
+              "type": "string"
+            },
+            "params": {
+              "$ref": "#/definitions/WorkflowStartedNotification"
+            }
+          },
+          "required": [
+            "method",
+            "params"
+          ],
+          "title": "Workflow/startedNotification",
+          "type": "object"
+        },
+        {
+          "properties": {
+            "method": {
+              "enum": [
+                "workflow/progress"
+              ],
+              "title": "Workflow/progressNotificationMethod",
+              "type": "string"
+            },
+            "params": {
+              "$ref": "#/definitions/WorkflowProgressNotification"
+            }
+          },
+          "required": [
+            "method",
+            "params"
+          ],
+          "title": "Workflow/progressNotification",
+          "type": "object"
+        },
+        {
+          "properties": {
+            "method": {
+              "enum": [
+                "workflow/completed"
+              ],
+              "title": "Workflow/completedNotificationMethod",
+              "type": "string"
+            },
+            "params": {
+              "$ref": "#/definitions/WorkflowCompletedNotification"
+            }
+          },
+          "required": [
+            "method",
+            "params"
+          ],
+          "title": "Workflow/completedNotification",
+          "type": "object"
+        },
+        {
+          "properties": {
+            "method": {
+              "enum": [
                 "thread/environment/connected"
               ],
               "title": "Thread/environment/connectedNotificationMethod",
@@ -19127,6 +19187,58 @@
             "type"
           ],
           "title": "SleepThreadItem",
+          "type": "object"
+        },
+        {
+          "description": "Display item emitted while a Workflow agent analyzes its injected inputs.",
+          "properties": {
+            "id": {
+              "type": "string"
+            },
+            "type": {
+              "enum": [
+                "workflowInputAnalysis"
+              ],
+              "title": "WorkflowInputAnalysisThreadItemType",
+              "type": "string"
+            }
+          },
+          "required": [
+            "id",
+            "type"
+          ],
+          "title": "WorkflowInputAnalysisThreadItem",
+          "type": "object"
+        },
+        {
+          "description": "Display item emitted while the owning model reads a Workflow result.",
+          "properties": {
+            "id": {
+              "type": "string"
+            },
+            "runId": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "status": {
+              "$ref": "#/definitions/WorkflowResultReadStatus"
+            },
+            "type": {
+              "enum": [
+                "workflowResultRead"
+              ],
+              "title": "WorkflowResultReadThreadItemType",
+              "type": "string"
+            }
+          },
+          "required": [
+            "id",
+            "status",
+            "type"
+          ],
+          "title": "WorkflowResultReadThreadItem",
           "type": "object"
         },
         {
@@ -22892,6 +23004,584 @@
         "samplePaths"
       ],
       "title": "WindowsWorldWritableWarningNotification",
+      "type": "object"
+    },
+    "WorkflowAgentActivity": {
+      "enum": [
+        "analyzing_inputs"
+      ],
+      "type": "string"
+    },
+    "WorkflowAgentState": {
+      "enum": [
+        "queued",
+        "start",
+        "done",
+        "error"
+      ],
+      "type": "string"
+    },
+    "WorkflowCompletedNotification": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "properties": {
+        "completedAt": {
+          "format": "int64",
+          "type": "integer"
+        },
+        "deliveryKey": {
+          "description": "Stable identity for deduplicating online delivery retries.",
+          "type": "string"
+        },
+        "error": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "failures": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "outputFile": {
+          "allOf": [
+            {
+              "$ref": "#/definitions/LegacyAppPathString"
+            }
+          ],
+          "description": "Path to the persisted run snapshot, including the terminal result."
+        },
+        "progressResyncRequired": {
+          "description": "Indicates that clients should refresh progress from the persisted task.",
+          "type": "boolean"
+        },
+        "runId": {
+          "type": "string"
+        },
+        "status": {
+          "$ref": "#/definitions/WorkflowStatus"
+        },
+        "summary": {
+          "type": "string"
+        },
+        "taskId": {
+          "type": "string"
+        },
+        "threadId": {
+          "type": "string"
+        },
+        "turnId": {
+          "type": "string"
+        },
+        "usage": {
+          "$ref": "#/definitions/WorkflowUsage"
+        },
+        "workflowName": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "completedAt",
+        "deliveryKey",
+        "failures",
+        "outputFile",
+        "progressResyncRequired",
+        "runId",
+        "status",
+        "summary",
+        "taskId",
+        "threadId",
+        "turnId",
+        "usage",
+        "workflowName"
+      ],
+      "title": "WorkflowCompletedNotification",
+      "type": "object"
+    },
+    "WorkflowIsolation": {
+      "enum": [
+        "worktree",
+        "remote"
+      ],
+      "type": "string"
+    },
+    "WorkflowProgressItem": {
+      "oneOf": [
+        {
+          "properties": {
+            "index": {
+              "format": "uint",
+              "minimum": 0.0,
+              "type": "integer"
+            },
+            "kind": {
+              "$ref": "#/definitions/WorkflowProgressKind"
+            },
+            "title": {
+              "type": "string"
+            },
+            "type": {
+              "enum": [
+                "workflowPhase"
+              ],
+              "title": "WorkflowPhaseWorkflowProgressItemType",
+              "type": "string"
+            }
+          },
+          "required": [
+            "index",
+            "kind",
+            "title",
+            "type"
+          ],
+          "title": "WorkflowPhaseWorkflowProgressItem",
+          "type": "object"
+        },
+        {
+          "properties": {
+            "activity": {
+              "anyOf": [
+                {
+                  "$ref": "#/definitions/WorkflowAgentActivity"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "agentId": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "attempt": {
+              "format": "uint32",
+              "minimum": 0.0,
+              "type": "integer"
+            },
+            "awaitingDecision": {
+              "default": false,
+              "description": "True while the workflow waits for the user to retry or skip this agent.",
+              "type": "boolean"
+            },
+            "blocked": {
+              "type": "boolean"
+            },
+            "cached": {
+              "type": "boolean"
+            },
+            "durationMs": {
+              "format": "uint64",
+              "minimum": 0.0,
+              "type": [
+                "integer",
+                "null"
+              ]
+            },
+            "error": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "fallbackModel": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "index": {
+              "format": "uint",
+              "minimum": 0.0,
+              "type": "integer"
+            },
+            "invocationId": {
+              "description": "Stable invocation identity within one workflow definition.",
+              "type": "string"
+            },
+            "isolation": {
+              "anyOf": [
+                {
+                  "$ref": "#/definitions/WorkflowIsolation"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "label": {
+              "type": "string"
+            },
+            "lastProgressAt": {
+              "description": "Unix timestamp in seconds when this progress item was last updated.",
+              "format": "uint64",
+              "minimum": 0.0,
+              "type": "integer"
+            },
+            "model": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "phaseIndex": {
+              "format": "uint",
+              "minimum": 0.0,
+              "type": [
+                "integer",
+                "null"
+              ]
+            },
+            "phaseTitle": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "promptPreview": {
+              "type": "string"
+            },
+            "queuedAt": {
+              "description": "Unix timestamp in seconds when the call entered the workflow queue.",
+              "format": "uint64",
+              "minimum": 0.0,
+              "type": "integer"
+            },
+            "resultPreview": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "skipped": {
+              "type": "boolean"
+            },
+            "startedAt": {
+              "description": "Unix timestamp in seconds when agent execution began.",
+              "format": "uint64",
+              "minimum": 0.0,
+              "type": [
+                "integer",
+                "null"
+              ]
+            },
+            "state": {
+              "$ref": "#/definitions/WorkflowAgentState"
+            },
+            "tokens": {
+              "format": "uint64",
+              "minimum": 0.0,
+              "type": [
+                "integer",
+                "null"
+              ]
+            },
+            "toolCalls": {
+              "format": "uint64",
+              "minimum": 0.0,
+              "type": [
+                "integer",
+                "null"
+              ]
+            },
+            "type": {
+              "enum": [
+                "workflowAgent"
+              ],
+              "title": "WorkflowAgentWorkflowProgressItemType",
+              "type": "string"
+            }
+          },
+          "required": [
+            "attempt",
+            "blocked",
+            "cached",
+            "index",
+            "invocationId",
+            "label",
+            "lastProgressAt",
+            "promptPreview",
+            "queuedAt",
+            "skipped",
+            "state",
+            "type"
+          ],
+          "title": "WorkflowAgentWorkflowProgressItem",
+          "type": "object"
+        },
+        {
+          "properties": {
+            "message": {
+              "type": "string"
+            },
+            "type": {
+              "enum": [
+                "workflowLog"
+              ],
+              "title": "WorkflowLogWorkflowProgressItemType",
+              "type": "string"
+            }
+          },
+          "required": [
+            "message",
+            "type"
+          ],
+          "title": "WorkflowLogWorkflowProgressItem",
+          "type": "object"
+        }
+      ]
+    },
+    "WorkflowProgressKind": {
+      "enum": [
+        "declared",
+        "active"
+      ],
+      "type": "string"
+    },
+    "WorkflowProgressNotification": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "properties": {
+        "progress": {
+          "items": {
+            "$ref": "#/definitions/WorkflowProgressItem"
+          },
+          "type": "array"
+        },
+        "runId": {
+          "type": "string"
+        },
+        "taskId": {
+          "type": "string"
+        },
+        "threadId": {
+          "type": "string"
+        },
+        "turnId": {
+          "type": "string"
+        },
+        "usage": {
+          "$ref": "#/definitions/WorkflowUsage"
+        }
+      },
+      "required": [
+        "progress",
+        "runId",
+        "taskId",
+        "threadId",
+        "turnId",
+        "usage"
+      ],
+      "title": "WorkflowProgressNotification",
+      "type": "object"
+    },
+    "WorkflowResultReadStatus": {
+      "description": "Lifecycle state of a Workflow result read displayed by the host.",
+      "enum": [
+        "inProgress",
+        "completed",
+        "failed"
+      ],
+      "type": "string"
+    },
+    "WorkflowStartedNotification": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "properties": {
+        "deliveryKey": {
+          "description": "Stable identity for deduplicating online delivery retries.",
+          "type": "string"
+        },
+        "runId": {
+          "type": "string"
+        },
+        "scriptPath": {
+          "$ref": "#/definitions/LegacyAppPathString"
+        },
+        "startedAt": {
+          "format": "int64",
+          "type": "integer"
+        },
+        "summary": {
+          "type": "string"
+        },
+        "taskId": {
+          "type": "string"
+        },
+        "threadId": {
+          "type": "string"
+        },
+        "title": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "transcriptDir": {
+          "$ref": "#/definitions/LegacyAppPathString"
+        },
+        "turnId": {
+          "type": "string"
+        },
+        "workflowName": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "deliveryKey",
+        "runId",
+        "scriptPath",
+        "startedAt",
+        "summary",
+        "taskId",
+        "threadId",
+        "transcriptDir",
+        "turnId",
+        "workflowName"
+      ],
+      "title": "WorkflowStartedNotification",
+      "type": "object"
+    },
+    "WorkflowStatus": {
+      "enum": [
+        "pending",
+        "running",
+        "completed",
+        "failed",
+        "paused",
+        "killed"
+      ],
+      "type": "string"
+    },
+    "WorkflowTask": {
+      "properties": {
+        "completedAt": {
+          "format": "int64",
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "error": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "failures": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "outputFile": {
+          "allOf": [
+            {
+              "$ref": "#/definitions/LegacyAppPathString"
+            }
+          ],
+          "description": "Path to the persisted run snapshot, including terminal result metadata."
+        },
+        "progress": {
+          "items": {
+            "$ref": "#/definitions/WorkflowProgressItem"
+          },
+          "type": "array"
+        },
+        "progressVersion": {
+          "format": "uint64",
+          "minimum": 0.0,
+          "type": "integer"
+        },
+        "runId": {
+          "type": "string"
+        },
+        "scriptPath": {
+          "$ref": "#/definitions/LegacyAppPathString"
+        },
+        "startedAt": {
+          "format": "int64",
+          "type": "integer"
+        },
+        "status": {
+          "$ref": "#/definitions/WorkflowStatus"
+        },
+        "summary": {
+          "type": "string"
+        },
+        "taskId": {
+          "type": "string"
+        },
+        "threadId": {
+          "type": "string"
+        },
+        "title": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "transcriptDir": {
+          "$ref": "#/definitions/LegacyAppPathString"
+        },
+        "turnId": {
+          "type": "string"
+        },
+        "usage": {
+          "$ref": "#/definitions/WorkflowUsage"
+        },
+        "workflowName": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "failures",
+        "outputFile",
+        "progress",
+        "progressVersion",
+        "runId",
+        "scriptPath",
+        "startedAt",
+        "status",
+        "summary",
+        "taskId",
+        "threadId",
+        "transcriptDir",
+        "turnId",
+        "usage",
+        "workflowName"
+      ],
+      "type": "object"
+    },
+    "WorkflowUsage": {
+      "properties": {
+        "agentCount": {
+          "format": "uint",
+          "minimum": 0.0,
+          "type": "integer"
+        },
+        "durationMs": {
+          "format": "uint64",
+          "minimum": 0.0,
+          "type": "integer"
+        },
+        "toolUses": {
+          "format": "uint64",
+          "minimum": 0.0,
+          "type": "integer"
+        },
+        "totalTokens": {
+          "format": "uint64",
+          "minimum": 0.0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "agentCount",
+        "durationMs",
+        "toolUses",
+        "totalTokens"
+      ],
       "type": "object"
     },
     "WorkspaceMessage": {

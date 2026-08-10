@@ -1051,6 +1051,23 @@ async fn run_review_on_session(
                 .sync_session_approved_hosts_to(&review_session.session.services.network_approval)
                 .await;
 
+            match &params.request {
+                GuardianApprovalRequest::ExtensionTool { artifact, .. } => {
+                    review_session
+                        .session
+                        .services
+                        .thread_extension_data
+                        .insert(artifact.clone());
+                }
+                _ => {
+                    review_session
+                        .session
+                        .services
+                        .thread_extension_data
+                        .remove::<crate::guardian::GuardianApprovalArtifact>();
+                }
+            }
+
             let mut prompt_items = build_guardian_prompt_items_with_parent_turn(
                 params.parent_session.as_ref(),
                 Some(&params.parent_context),

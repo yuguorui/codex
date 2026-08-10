@@ -320,7 +320,7 @@ async fn run_websocket_outbound_loop<M, SinkError>(
                     break;
                 }
                 if let Some(write_complete_tx) = queued_message.write_complete_tx {
-                    let _ = write_complete_tx.send(());
+                    let _ = write_complete_tx.send(crate::OutgoingWriteResult::Written);
                 }
             }
         }
@@ -386,3 +386,7 @@ async fn run_websocket_inbound_loop<M, StreamError>(
         }
     }
 }
+
+#[cfg(test)]
+#[path = "websocket_tests.rs"]
+mod tests;

@@ -27,7 +27,7 @@ pub async fn start_stdio_connection(
     initialize_client_name_tx: oneshot::Sender<String>,
 ) -> IoResult<()> {
     let connection_id = next_connection_id();
-    let (writer_tx, mut writer_rx) = mpsc::channel::<QueuedOutgoingMessage>(CHANNEL_CAPACITY);
+    let (writer_tx, writer_rx) = mpsc::channel::<QueuedOutgoingMessage>(CHANNEL_CAPACITY);
     let writer_tx_for_reader = writer_tx.clone();
     transport_event_tx
         .send(TransportEvent::ConnectionOpened {
@@ -79,25 +79,33 @@ pub async fn start_stdio_connection(
         debug!("stdin reader finished (EOF)");
     }));
 
-    stdio_handles.push(tokio::spawn(async move {
-        let mut stdout = io::stdout();
-        while let Some(queued_message) = writer_rx.recv().await {
-            let Some(mut json) = serialize_outgoing_message(queued_message.message) else {
-                continue;
-            };
-            json.push('\n');
-            if let Err(err) = stdout.write_all(json.as_bytes()).await {
-                error!("Failed to write to stdout: {err}");
-                break;
-            }
-            if let Some(write_complete_tx) = queued_message.write_complete_tx {
-                let _ = write_complete_tx.send(());
-            }
-        }
-        info!("stdout writer exited (channel closed)");
-    }));
+    stdio_handles.push(tokio::spawn(run_stdio_writer(io::stdout(), writer_rx)));
 
     Ok(())
+}
+
+async fn run_stdio_writer(
+    mut stdout: impl io::AsyncWrite + Unpin,
+    mut writer_rx: mpsc::Receiver<QueuedOutgoingMessage>,
+) {
+    while let Some(queued_message) = writer_rx.recv().await {
+        let Some(mut json) = serialize_outgoing_message(queued_message.message) else {
+            continue;
+        };
+        json.push('\n');
+        if let Err(err) = stdout.write_all(json.as_bytes()).await {
+            error!("Failed to write to stdout: {err}");
+            break;
+        }
+        if let Err(err) = stdout.flush().await {
+            error!("Failed to flush stdout: {err}");
+            break;
+        }
+        if let Some(write_complete_tx) = queued_message.write_complete_tx {
+            let _ = write_complete_tx.send(crate::OutgoingWriteResult::Written);
+        }
+    }
+    info!("stdout writer exited (channel closed)");
 }
 
 fn stdio_initialize_client_name(line: &str) -> Option<String> {
@@ -111,3 +119,7 @@ fn stdio_initialize_client_name(line: &str) -> Option<String> {
     let params = serde_json::from_value::<InitializeParams>(params?).ok()?;
     Some(params.client_info.name)
 }
+
+#[cfg(test)]
+#[path = "stdio_tests.rs"]
+mod tests;

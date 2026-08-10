@@ -1,0 +1,125 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "definitions": {
+    "LegacyAppPathString": {
+      "type": "string"
+    },
+    "WorkflowStatus": {
+      "enum": [
+        "pending",
+        "running",
+        "completed",
+        "failed",
+        "paused",
+        "killed"
+      ],
+      "type": "string"
+    },
+    "WorkflowUsage": {
+      "properties": {
+        "agentCount": {
+          "format": "uint",
+          "minimum": 0.0,
+          "type": "integer"
+        },
+        "durationMs": {
+          "format": "uint64",
+          "minimum": 0.0,
+          "type": "integer"
+        },
+        "toolUses": {
+          "format": "uint64",
+          "minimum": 0.0,
+          "type": "integer"
+        },
+        "totalTokens": {
+          "format": "uint64",
+          "minimum": 0.0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "agentCount",
+        "durationMs",
+        "toolUses",
+        "totalTokens"
+      ],
+      "type": "object"
+    }
+  },
+  "properties": {
+    "completedAt": {
+      "format": "int64",
+      "type": "integer"
+    },
+    "deliveryKey": {
+      "description": "Stable identity for deduplicating online delivery retries.",
+      "type": "string"
+    },
+    "error": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "failures": {
+      "items": {
+        "type": "string"
+      },
+      "type": "array"
+    },
+    "outputFile": {
+      "allOf": [
+        {
+          "$ref": "#/definitions/LegacyAppPathString"
+        }
+      ],
+      "description": "Path to the persisted run snapshot, including the terminal result."
+    },
+    "progressResyncRequired": {
+      "description": "Indicates that clients should refresh progress from the persisted task.",
+      "type": "boolean"
+    },
+    "runId": {
+      "type": "string"
+    },
+    "status": {
+      "$ref": "#/definitions/WorkflowStatus"
+    },
+    "summary": {
+      "type": "string"
+    },
+    "taskId": {
+      "type": "string"
+    },
+    "threadId": {
+      "type": "string"
+    },
+    "turnId": {
+      "type": "string"
+    },
+    "usage": {
+      "$ref": "#/definitions/WorkflowUsage"
+    },
+    "workflowName": {
+      "type": "string"
+    }
+  },
+  "required": [
+    "completedAt",
+    "deliveryKey",
+    "failures",
+    "outputFile",
+    "progressResyncRequired",
+    "runId",
+    "status",
+    "summary",
+    "taskId",
+    "threadId",
+    "turnId",
+    "usage",
+    "workflowName"
+  ],
+  "title": "WorkflowCompletedNotification",
+  "type": "object"
+}

@@ -1085,14 +1085,14 @@ async fn resume_agent_from_rollout_does_not_reopen_v2_descendants() {
     assert_thread_not_loaded(&resumed_manager, reviewer_thread_id).await;
     assert_thread_not_loaded(&resumed_manager, sibling_thread_id).await;
     resumed_control
-        .restore_v2_agent_metadata(&harness.config, parent_thread_id)
+        .restore_agent_metadata(&harness.config, parent_thread_id)
         .await;
     for thread_id in [worker_thread_id, sibling_thread_id] {
         assert!(resumed_control.ensure_agent_known(thread_id).is_ok());
     }
 
     resumed_control
-        .close_agent(worker_thread_id)
+        .close_agent(parent_thread_id, worker_thread_id)
         .await
         .expect("closing a restored sibling should succeed");
 
@@ -4191,7 +4191,7 @@ async fn shutdown_agent_tree_closes_descendants_when_started_at_child() {
 
     let _ = harness
         .control
-        .close_agent(child_thread_id)
+        .close_agent(parent_thread_id, child_thread_id)
         .await
         .expect("child close should succeed");
 
@@ -4283,7 +4283,7 @@ async fn resume_agent_from_rollout_does_not_reopen_closed_descendants() {
 
     let _ = harness
         .control
-        .close_agent(child_thread_id)
+        .close_agent(parent_thread_id, child_thread_id)
         .await
         .expect("child close should succeed");
     let _ = harness
@@ -4378,7 +4378,7 @@ async fn resume_closed_child_reopens_open_descendants() {
 
     let _ = harness
         .control
-        .close_agent(child_thread_id)
+        .close_agent(parent_thread_id, child_thread_id)
         .await
         .expect("child close should succeed");
 
@@ -4409,7 +4409,7 @@ async fn resume_closed_child_reopens_open_descendants() {
 
     let _ = harness
         .control
-        .close_agent(child_thread_id)
+        .close_agent(parent_thread_id, child_thread_id)
         .await
         .expect("child close after resume should succeed");
     let _ = harness
