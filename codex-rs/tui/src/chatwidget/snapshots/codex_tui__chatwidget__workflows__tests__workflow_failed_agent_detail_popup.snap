@@ -1,0 +1,16 @@
+---
+source: tui/src/chatwidget/workflows_tests.rs
+expression: "render_view_with_height(agent_detail_params_for(WorkflowStatus::Failed, 3),\n22)"
+---
+
+  failed
+  failed · Phase 2: Verify · agent 00000000
+
+› 1. ↗ Open transcript  Agent conversation
+     Runtime            gpt-5 · shared workspace · attempt 1
+     Usage              1.2K tokens · 2 tools · 1.00s
+     Timing             queued 2024-08-30 06:40:30 UTC · started 2024-08-30 06:40:31
+                        UTC · updated 2024-08-30 06:40:35 UTC
+     Prompt             Inspect subsystem 3 and report concrete findings with file
+                        references.
+     Error              Agent failed while validating the candidate finding
