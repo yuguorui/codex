@@ -183,15 +183,10 @@ async fn handle_file_read(
             "This tool cannot read binary files. The file appears to be a binary {extension} file. Please use appropriate tools for binary file analysis."
         )));
     }
-    let native_cwd = turn_environment.cwd().to_abs_path().map_err(|error| {
-        FunctionCallError::RespondToModel(format!(
-            "Read could not resolve the environment working directory: {error}"
-        ))
-    })?;
     let effective_permissions = apply_granted_turn_permissions(
         session.as_ref(),
-        &turn_environment.selection.environment_id,
-        native_cwd.as_path(),
+        turn_environment,
+        turn_environment.cwd(),
         SandboxPermissions::UseDefault,
         /*additional_permissions*/ None,
     )

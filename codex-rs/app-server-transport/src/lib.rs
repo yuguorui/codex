@@ -13,6 +13,7 @@ pub use outgoing_message::ConnectionId;
 pub use outgoing_message::OutgoingError;
 pub use outgoing_message::OutgoingMessage;
 pub use outgoing_message::OutgoingResponse;
+pub use outgoing_message::OutgoingWriteResult;
 pub use outgoing_message::QueuedOutgoingMessage;
 pub use transport::AppServerStartupLock;
 pub use transport::AppServerTransport;

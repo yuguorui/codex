@@ -285,6 +285,9 @@ impl Session {
         input: Vec<TurnInput>,
         task: T,
     ) {
+        if self.is_closing() {
+            return;
+        }
         // Inherited or recovered roots are applied before task start. Otherwise this
         // task owns its turn, including background work. Later mail cannot change it.
         turn_context
@@ -315,6 +318,9 @@ impl Session {
         let (pending_items, _) = self.input_queue.drain_mailbox_input_items().await;
         let turn_state = {
             let mut active = self.active_turn.lock().await;
+            if self.is_closing() {
+                return;
+            }
             let turn = active.get_or_insert_with(ActiveTurn::default);
             debug_assert!(turn.task.is_none());
             Arc::clone(&turn.turn_state)
@@ -327,6 +333,9 @@ impl Session {
             .await;
 
         let mut active = self.active_turn.lock().await;
+        if self.is_closing() {
+            return;
+        }
         let turn = active.get_or_insert_with(ActiveTurn::default);
         debug_assert!(turn.task.is_none());
         let agent_execution_guard = self.services.agent_control.execution_guard(
@@ -442,6 +451,9 @@ impl Session {
         self: &Arc<Self>,
         sub_id: String,
     ) {
+        if self.is_closing() {
+            return;
+        }
         if !self.input_queue.has_pending_mailbox_items().await
             || (!self.input_queue.has_trigger_turn_mailbox_items().await
                 && !self.has_outstanding_durable_sleep())
@@ -451,7 +463,7 @@ impl Session {
 
         let turn_state = {
             let mut active_turn = self.active_turn.lock().await;
-            if active_turn.is_some() {
+            if self.is_closing() || active_turn.is_some() {
                 return;
             }
             let active_turn = active_turn.get_or_insert_with(ActiveTurn::default);
@@ -885,6 +897,24 @@ impl Session {
             .unified_exec_manager
             .terminate_all_processes()
             .await;
+    }
+
+    pub(crate) async fn has_live_tracked_processes(&self) -> bool {
+        !self.list_background_terminals().await.is_empty()
+    }
+
+    pub(crate) async fn model_stream_active(&self) -> bool {
+        let turn_timing_state = {
+            let active_turn = self.active_turn.lock().await;
+            active_turn
+                .as_ref()
+                .and_then(|active_turn| active_turn.task.as_ref())
+                .map(|task| Arc::clone(&task.turn_context.turn_timing_state))
+        };
+        let Some(turn_timing_state) = turn_timing_state else {
+            return false;
+        };
+        turn_timing_state.sampling_active().await
     }
 
     pub(crate) async fn list_background_terminals(&self) -> Vec<BackgroundTerminalInfo> {

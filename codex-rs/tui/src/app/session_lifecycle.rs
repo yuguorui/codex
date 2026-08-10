@@ -400,6 +400,15 @@ impl App {
                 if started.blocks_direct_input {
                     self.agent_navigation.mark_parent_owned(thread_id);
                 }
+                let existing_entry = self.agent_navigation.get(&thread_id).cloned();
+                self.upsert_agent_picker_thread(
+                    thread_id,
+                    existing_entry
+                        .as_ref()
+                        .and_then(|entry| entry.agent_nickname.clone()),
+                    existing_entry.and_then(|entry| entry.agent_role),
+                    /*is_closed*/ false,
+                );
                 (started.session, started.turns, true)
             }
             Err(resume_err) => {
@@ -733,10 +742,6 @@ impl App {
         self.thread_event_channels
             .get(&thread_id)
             .is_none_or(|channel| channel.attachment() != ThreadEventAttachment::Live)
-            && self
-                .agent_navigation
-                .get(&thread_id)
-                .is_none_or(|entry| !entry.is_closed || self.thread_unavailable(thread_id))
     }
 
     pub(super) fn reset_for_thread_switch(&mut self, tui: &mut tui::Tui) -> Result<()> {

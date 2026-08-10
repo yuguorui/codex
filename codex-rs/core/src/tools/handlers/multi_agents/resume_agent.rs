@@ -50,8 +50,8 @@ async fn handle_resume_agent(
     let receiver_agent = session
         .services
         .agent_control
-        .get_agent_metadata(receiver_thread_id)
-        .unwrap_or_default();
+        .authorize_agent_access(session.thread_id, receiver_thread_id)
+        .map_err(|err| collab_agent_error(receiver_thread_id, err))?;
     let child_depth = next_thread_spawn_depth(&turn.session_source);
     let max_depth = turn.config.agent_max_depth;
     if exceeds_thread_spawn_depth_limit(child_depth, max_depth) {

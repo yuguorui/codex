@@ -107,6 +107,49 @@ impl ChatWidget {
         }
     }
 
+    pub(super) fn on_workflow_result_read_begin(
+        &mut self,
+        call_id: String,
+        run_id: Option<String>,
+    ) {
+        self.flush_answer_stream_with_separator();
+        self.flush_active_cell();
+        self.transcript.active_cell = Some(Box::new(workflows::WorkflowResultReadCell::new(
+            call_id,
+            run_id,
+            self.config.animations,
+        )));
+        self.bump_active_cell_revision();
+        self.request_redraw();
+    }
+
+    pub(super) fn on_workflow_result_read_end(
+        &mut self,
+        call_id: String,
+        run_id: Option<String>,
+        status: codex_app_server_protocol::WorkflowResultReadStatus,
+    ) {
+        self.flush_answer_stream_with_separator();
+        let mut handled = false;
+        if let Some(cell) = self.transcript.active_cell.as_mut().and_then(|cell| {
+            cell.as_any_mut()
+                .downcast_mut::<workflows::WorkflowResultReadCell>()
+        }) && cell.call_id() == call_id
+        {
+            cell.finish(status);
+            self.bump_active_cell_revision();
+            self.flush_active_cell();
+            handled = true;
+        }
+        if !handled {
+            let mut cell = workflows::WorkflowResultReadCell::new(
+                call_id, run_id, /*animations_enabled*/ false,
+            );
+            cell.finish(status);
+            self.add_to_history(cell);
+        }
+    }
+
     pub(super) fn on_collab_event(&mut self, cell: PlainHistoryCell) {
         self.flush_answer_stream_with_separator();
         self.add_to_history(cell);

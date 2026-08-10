@@ -18,6 +18,7 @@ pub(crate) use codex_app_server_transport::ConnectionId;
 pub(crate) use codex_app_server_transport::ConnectionOrigin;
 pub(crate) use codex_app_server_transport::DaemonShutdownAccess;
 pub(crate) use codex_app_server_transport::OutgoingMessage;
+pub(crate) use codex_app_server_transport::OutgoingWriteResult;
 pub(crate) use codex_app_server_transport::QueuedOutgoingMessage;
 pub(crate) use codex_app_server_transport::RemoteControlEnableError;
 pub(crate) use codex_app_server_transport::RemoteControlHandle;
@@ -138,7 +139,7 @@ async fn send_message_to_connection(
     connections: &mut HashMap<ConnectionId, OutboundConnectionState>,
     connection_id: ConnectionId,
     message: OutgoingMessage,
-    write_complete_tx: Option<tokio::sync::oneshot::Sender<()>>,
+    write_complete_tx: Option<tokio::sync::oneshot::Sender<OutgoingWriteResult>>,
 ) -> bool {
     let Some(connection_state) = connections.get(&connection_id) else {
         warn!("dropping message for disconnected connection: {connection_id:?}");
@@ -146,6 +147,9 @@ async fn send_message_to_connection(
     };
     let message = filter_outgoing_message_for_connection(connection_state, message);
     if should_skip_notification_for_connection(connection_state, &message) {
+        if let Some(write_complete_tx) = write_complete_tx {
+            let _ = write_complete_tx.send(OutgoingWriteResult::NotTarget);
+        }
         return false;
     }
 
@@ -154,7 +158,18 @@ async fn send_message_to_connection(
         message,
         write_complete_tx,
     };
-    if connection_state.can_disconnect() {
+    if queued_message.write_complete_tx.is_some() {
+        match writer.try_send(queued_message) {
+            Ok(()) => false,
+            Err(mpsc::error::TrySendError::Full(_)) => {
+                warn!("tracked delivery queue is full for connection: {connection_id:?}");
+                false
+            }
+            Err(mpsc::error::TrySendError::Closed(_)) => {
+                disconnect_connection(connections, connection_id)
+            }
+        }
+    } else if connection_state.can_disconnect() {
         match writer.try_send(queued_message) {
             Ok(()) => false,
             Err(mpsc::error::TrySendError::Full(_)) => {

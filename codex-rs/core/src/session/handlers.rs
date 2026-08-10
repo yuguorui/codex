@@ -539,6 +539,10 @@ pub(super) async fn submission_loop(
         } else {
             debug!(?sub, "Submission");
         }
+        if sess.is_closing() {
+            break;
+        }
+        debug!(?sub, "Submission");
         let dispatch_span = submission_dispatch_span(&sub);
         let should_exit = async {
             match sub.op {

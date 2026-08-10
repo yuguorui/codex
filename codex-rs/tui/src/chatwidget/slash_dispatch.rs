@@ -336,13 +336,19 @@ impl ChatWidget {
             SlashCommand::Voice => {
                 self.toggle_realtime_conversation();
             }
+            SlashCommand::Workflows => {
+                if !self.config.features.enabled(Feature::Workflows) {
+                    return;
+                }
+                self.app_event_tx.send(AppEvent::OpenWorkflows);
+            }
             SlashCommand::Side | SlashCommand::Btw => {
                 self.request_empty_side_conversation(cmd);
             }
             SlashCommand::Agents => {
                 self.app_event_tx.send(AppEvent::OpenAgentsOverview);
             }
-            SlashCommand::MultiAgents => {
+            SlashCommand::Agent | SlashCommand::MultiAgents => {
                 self.app_event_tx.send(AppEvent::OpenAgentPicker);
             }
             SlashCommand::Permissions => {
@@ -1150,6 +1156,7 @@ impl ChatWidget {
             plugins_command_enabled: self.config.features.enabled(Feature::Plugins),
             token_activity_command_enabled: self.has_codex_backend_auth,
             goal_command_enabled: self.config.features.enabled(Feature::Goals),
+            workflow_command_enabled: self.config.features.enabled(Feature::Workflows),
             service_tier_commands_enabled: self.fast_mode_enabled(),
             personality_command_enabled: self.config.features.enabled(Feature::Personality),
             voice_command_enabled: self.realtime_conversation_available_for_thread,
@@ -1185,6 +1192,7 @@ impl ChatWidget {
             | SlashCommand::Mcp
             | SlashCommand::Apps
             | SlashCommand::Plugins
+            | SlashCommand::Workflows
             | SlashCommand::Rollout
             | SlashCommand::Copy
             | SlashCommand::Raw
@@ -1224,6 +1232,7 @@ impl ChatWidget {
             | SlashCommand::Side
             | SlashCommand::Btw
             | SlashCommand::Keymap
+            | SlashCommand::Agent
             | SlashCommand::Agents
             | SlashCommand::MultiAgents
             | SlashCommand::Permissions

@@ -55,6 +55,8 @@ use crossterm::event::KeyEventKind;
 const NO_PREVIOUS_MESSAGE_TO_EDIT: &str = "No previous message to edit.";
 pub(crate) const SIDE_EDIT_PREVIOUS_UNAVAILABLE_MESSAGE: &str =
     "Editing previous prompts is unavailable in side conversations.";
+pub(crate) const WORKFLOW_EDIT_PREVIOUS_UNAVAILABLE_MESSAGE: &str =
+    "Editing previous prompts is unavailable in Workflow subagents.";
 
 /// Aggregates all backtrack-related state used by the App.
 #[derive(Default)]
@@ -119,6 +121,13 @@ impl App {
             self.reset_backtrack_state();
             self.chat_widget
                 .add_error_message(SIDE_EDIT_PREVIOUS_UNAVAILABLE_MESSAGE.to_string());
+            return;
+        }
+
+        if self.viewing_workflow_agent_thread() {
+            self.reset_backtrack_state();
+            self.chat_widget
+                .add_error_message(WORKFLOW_EDIT_PREVIOUS_UNAVAILABLE_MESSAGE.to_string());
             return;
         }
 

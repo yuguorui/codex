@@ -19,6 +19,8 @@ use codex_guardian_context::default_registry;
 use codex_protocol::models::ResponseItem;
 use codex_protocol::user_input::UserInput;
 
+use crate::context::ContextualUserFragment;
+use crate::context::GuardianExtensionApproval;
 use crate::context::GuardianReviewEvidence;
 use crate::context::NodeReplReviewEvidence;
 use crate::context::NodeReplReviewEvidenceMode;
@@ -129,6 +131,12 @@ pub(crate) async fn build_guardian_prompt_items_with_parent_turn(
         .get_or_init(GuardianReviewEvidence::default)
         .user_input_snapshot(history)
         .fragments;
+    let excluded_call_id = match &request {
+        GuardianApprovalRequest::ExtensionTool { id, .. } => Some(id.as_str()),
+        _ => None,
+    };
+    let is_extension_tool_approval =
+        matches!(&request, GuardianApprovalRequest::ExtensionTool { .. });
     let planned_action_json = format_guardian_action_pretty(&request)?;
     let planned_action = PlannedAction {
         json: planned_action_json.text,
@@ -142,14 +150,19 @@ pub(crate) async fn build_guardian_prompt_items_with_parent_turn(
             GuardianApprovalRequest::ExecCommand { .. }
             | GuardianApprovalRequest::ApplyPatch { .. }
             | GuardianApprovalRequest::McpToolCall { .. }
+            | GuardianApprovalRequest::ExtensionTool { .. }
             | GuardianApprovalRequest::RequestPermissions { .. } => PlannedActionKind::Command,
         },
-        reason: reasons.retry.or(reasons.approval).map(|reason| {
-            truncate_text(
-                &reason,
-                TruncationPolicy::Tokens(GUARDIAN_MAX_APPROVAL_REASON_TOKENS),
-            )
-        }),
+        reason: reasons
+            .retry
+            .as_ref()
+            .or(reasons.approval.as_ref())
+            .map(|reason| {
+                truncate_text(
+                    reason,
+                    TruncationPolicy::Tokens(GUARDIAN_MAX_APPROVAL_REASON_TOKENS),
+                )
+            }),
     };
     let permissions = parent_context.map(parent_turn_permissions);
     let node_repl_snapshot = if node_repl_transcripts_enabled {
@@ -171,10 +184,11 @@ pub(crate) async fn build_guardian_prompt_items_with_parent_turn(
         });
     let sections = collect_guardian_context(
         &GuardianReviewHistory(history),
+        excluded_call_id,
         node_repl_result_token_limit,
         root_authorization.as_deref().unwrap_or_default(),
         &trusted_user_inputs,
-        Some(&planned_action),
+        (!is_extension_tool_approval).then_some(&planned_action),
         permissions.as_ref(),
         node_repl_context.as_ref(),
     )?;
@@ -247,63 +261,65 @@ pub(crate) async fn build_guardian_prompt_items_with_parent_turn(
         }
     };
     let mut items = Vec::new();
-    let mut push_text = |text: String| {
-        items.push(UserInput::Text {
-            text,
-            text_elements: Vec::new(),
-        });
-    };
-
-    push_text(headings.intro.to_string());
     let mut action_items = Vec::new();
     let mut permission_items = Vec::new();
     let mut image_items = Vec::new();
     let mut node_repl_items = Vec::new();
-    for section in sections {
-        match section {
-            ContextSection::RootConversation { items }
-            | ContextSection::RetainedUserInstructions { items }
-            | ContextSection::TrustedUserAnswers { items } => {
-                for text in items {
-                    push_text(text);
+    {
+        let mut push_text = |text: String| {
+            items.push(UserInput::Text {
+                text,
+                text_elements: Vec::new(),
+            });
+        };
+
+        push_text(headings.intro.to_string());
+        for section in sections {
+            match section {
+                ContextSection::RootConversation { items }
+                | ContextSection::RetainedUserInstructions { items }
+                | ContextSection::TrustedUserAnswers { items } => {
+                    for text in items {
+                        push_text(text);
+                    }
+                }
+                ContextSection::PreviousReviews(_)
+                | ContextSection::TrustedTool(_)
+                | ContextSection::TrustedSkills(_) => {
+                    unreachable!("trusted review and tool sections are async-only")
+                }
+                ContextSection::NodeReplEvidence(evidence) => node_repl_items = evidence.items,
+                ContextSection::TranscriptImages(images) => {
+                    image_items.extend(images.images.into_iter().filter_map(|image| match image {
+                        codex_protocol::models::ContentItem::InputImage { image_url, detail } => {
+                            Some(UserInput::Image { image_url, detail })
+                        }
+                        _ => None,
+                    }));
+                }
+                ContextSection::ConversationTranscript { .. } => {}
+                ContextSection::PermissionContext { items } => permission_items = items,
+                ContextSection::PlannedAction(action) => {
+                    action_items = action.render(action_presentation)
                 }
             }
-            ContextSection::PreviousReviews(_)
-            | ContextSection::TrustedTool(_)
-            | ContextSection::TrustedSkills(_) => {
-                unreachable!("trusted review and tool sections are async-only")
-            }
-            ContextSection::NodeReplEvidence(evidence) => node_repl_items = evidence.items,
-            ContextSection::TranscriptImages(images) => {
-                image_items.extend(images.images.into_iter().filter_map(|image| match image {
-                    codex_protocol::models::ContentItem::InputImage { image_url, detail } => {
-                        Some(UserInput::Image { image_url, detail })
-                    }
-                    _ => None,
-                }));
-            }
-            ContextSection::ConversationTranscript { .. } => {}
-            ContextSection::PermissionContext { items } => permission_items = items,
-            ContextSection::PlannedAction(action) => {
-                action_items = action.render(action_presentation)
-            }
         }
-    }
-    push_text(headings.transcript_start.to_string());
-    for (index, entry) in transcript_entries.into_iter().enumerate() {
-        let prefix = if index == 0 { "" } else { "\n" };
-        push_text(format!("{prefix}{entry}\n"));
-    }
-    push_text(headings.transcript_end.to_string());
-    push_text(format!(
-        "Reviewed Codex session id: {}\n",
-        session.thread_id
-    ));
-    if let Some(note) = omission_note {
-        push_text(format!("\n{note}\n"));
-    }
-    for text in permission_items {
-        push_text(text);
+        push_text(headings.transcript_start.to_string());
+        for (index, entry) in transcript_entries.into_iter().enumerate() {
+            let prefix = if index == 0 { "" } else { "\n" };
+            push_text(format!("{prefix}{entry}\n"));
+        }
+        push_text(headings.transcript_end.to_string());
+        push_text(format!(
+            "Reviewed Codex session id: {}\n",
+            session.thread_id
+        ));
+        if let Some(note) = omission_note {
+            push_text(format!("\n{note}\n"));
+        }
+        for text in permission_items {
+            push_text(text);
+        }
     }
     items.extend(image_items);
     items.extend(node_repl_items);
@@ -311,6 +327,49 @@ pub(crate) async fn build_guardian_prompt_items_with_parent_turn(
         text,
         text_elements: Vec::new(),
     }));
+    if is_extension_tool_approval
+        && let GuardianApprovalRequest::ExtensionTool {
+            tool_name,
+            artifact,
+            ..
+        } = &request
+    {
+        let mut push_text = |text: String| {
+            items.push(UserInput::Text {
+                text,
+                text_elements: Vec::new(),
+            });
+        };
+        push_text(
+            match action_presentation {
+                ActionPresentation::SyncDelta => {
+                    "The Codex agent has requested the following next action:\n"
+                }
+                ActionPresentation::SyncFull | ActionPresentation::Async => {
+                    "The Codex agent has requested the following action:\n"
+                }
+            }
+            .to_string(),
+        );
+        push_text(">>> APPROVAL REQUEST START\n".to_string());
+        if let Some(reason) = reasons.retry.or(reasons.approval) {
+            let reason = truncate_text(
+                &reason,
+                TruncationPolicy::Tokens(GUARDIAN_MAX_APPROVAL_REASON_TOKENS),
+            );
+            push_text("Retry reason:\n".to_string());
+            push_text(format!("{reason}\n\n"));
+        }
+        push_text(
+            "Review the complete content-addressed extension action with `read_guardian_approval_artifact`. Continue reading from each returned offset until the artifact is complete, then assess that exact action.\n"
+                .to_string(),
+        );
+        push_text(
+            GuardianExtensionApproval::new(tool_name, artifact.sha256(), artifact.byte_length())
+                .render(),
+        );
+        push_text(">>> APPROVAL REQUEST END\n".to_string());
+    }
     Ok(GuardianPromptItems {
         items,
         transcript_cursor,
@@ -483,6 +542,7 @@ fn render_guardian_transcript_entries_with_offset(
 /// Node REPL cap; the cursor still counts every non-empty evidence entry.
 pub(super) fn collect_guardian_context(
     history: &dyn SectionHistory,
+    excluded_call_id: Option<&str>,
     node_repl_result_token_limit: usize,
     root_conversation: &[GuardianRootMessage],
     trusted_user_answers: &[String],
@@ -500,7 +560,10 @@ pub(super) fn collect_guardian_context(
     };
     default_registry().collect(&SectionInput {
         target: ContextTarget::Sync,
-        history: &FilteredGuardianHistory(history),
+        history: &FilteredGuardianHistory {
+            history,
+            excluded_call_id,
+        },
         transcript: &transcript,
         root_conversation,
         trusted_user_answers,
@@ -526,21 +589,47 @@ impl SectionHistory for GuardianReviewHistory<'_> {
     }
 }
 
-struct FilteredGuardianHistory<'a>(&'a dyn SectionHistory);
+struct FilteredGuardianHistory<'a> {
+    history: &'a dyn SectionHistory,
+    excluded_call_id: Option<&'a str>,
+}
 
 impl SectionHistory for FilteredGuardianHistory<'_> {
     fn retained_context(&self) -> Option<&codex_history::RetainedContext> {
-        self.0.retained_context()
+        self.history.retained_context()
     }
 
     fn items(&self) -> Box<dyn Iterator<Item = &ResponseItem> + Send + '_> {
-        Box::new(self.0.items().filter(|item| {
-            !matches!(
-                item,
-                ResponseItem::Message { role, content, .. }
-                    if role == "user" && is_contextual_user_message_content(content)
-            )
+        Box::new(self.history.items().filter(move |item| {
+            if is_contextual_user_message_content_filter(item) {
+                return false;
+            }
+            !is_excluded_tool_exchange(item, self.excluded_call_id)
         }))
+    }
+}
+
+fn is_contextual_user_message_content_filter(item: &ResponseItem) -> bool {
+    matches!(
+        item,
+        ResponseItem::Message { role, content, .. }
+            if role == "user" && is_contextual_user_message_content(content)
+    )
+}
+
+fn is_excluded_tool_exchange(item: &ResponseItem, excluded_call_id: Option<&str>) -> bool {
+    let Some(excluded_call_id) = excluded_call_id else {
+        return false;
+    };
+    match item {
+        ResponseItem::FunctionCall { call_id, .. }
+        | ResponseItem::CustomToolCall { call_id, .. }
+        | ResponseItem::FunctionCallOutput {
+            call_id: Some(call_id),
+            ..
+        }
+        | ResponseItem::CustomToolCallOutput { call_id, .. } => call_id == excluded_call_id,
+        _ => false,
     }
 }
 

@@ -110,6 +110,50 @@ async fn session_and_settings_sync_server_provider_id() {
     assert!(status(&mut chat).contains("server-updated"));
 }
 
+#[tokio::test]
+async fn live_workflow_result_read_failure_finishes_the_active_cell() {
+    let (mut chat, mut rx, _ops) = make_chatwidget_manual(/*model_override*/ None).await;
+    let item = |status| {
+        AppServerThreadItem::WorkflowResultRead(WorkflowResultReadItem {
+            id: "read-result".to_string(),
+            run_id: None,
+            status,
+        })
+    };
+
+    chat.handle_server_notification(
+        ServerNotification::ItemStarted(ItemStartedNotification {
+            thread_id: "thread-workflow".to_string(),
+            turn_id: "turn-read-result".to_string(),
+            item: item(WorkflowResultReadStatus::InProgress),
+            started_at_ms: 1,
+        }),
+        /*replay_kind*/ None,
+    );
+    let active = chat
+        .active_cell_transcript_lines(/*width*/ 80)
+        .expect("workflow result read should be active");
+    assert!(lines_to_single_string(&active).contains("Reading Workflow result"));
+
+    chat.handle_server_notification(
+        ServerNotification::ItemCompleted(ItemCompletedNotification {
+            thread_id: "thread-workflow".to_string(),
+            turn_id: "turn-read-result".to_string(),
+            item: item(WorkflowResultReadStatus::Failed),
+            completed_at_ms: 2,
+        }),
+        /*replay_kind*/ None,
+    );
+
+    assert!(chat.transcript.active_cell.is_none());
+    let cells = drain_insert_history(&mut rx);
+    assert_eq!(cells.len(), 1);
+    assert_eq!(
+        lines_to_single_string(&cells[0]),
+        "✗ Failed to read Workflow result\n"
+    );
+}
+
 fn start_safety_buffering_test_turn(
     chat: &mut ChatWidget,
     op_rx: &mut tokio::sync::mpsc::UnboundedReceiver<Op>,

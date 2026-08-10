@@ -2634,7 +2634,7 @@ fn attach_live_thread_for_selection_rejects_unmaterialized_fallback_threads() ->
 }
 
 #[tokio::test]
-async fn should_attach_live_thread_for_selection_skips_closed_metadata_only_threads() {
+async fn should_attach_live_thread_for_selection_hydrates_closed_metadata_only_threads() {
     let mut app = make_test_app().await;
     let thread_id = ThreadId::new();
     app.agent_navigation.upsert(
@@ -2644,7 +2644,7 @@ async fn should_attach_live_thread_for_selection_skips_closed_metadata_only_thre
         /*is_closed*/ true,
     );
 
-    assert!(!app.should_attach_live_thread_for_selection(thread_id));
+    assert!(app.should_attach_live_thread_for_selection(thread_id));
 
     app.agent_navigation.upsert(
         thread_id,
@@ -9214,6 +9214,31 @@ async fn side_conversations_reject_backtrack_esc_without_stealing_vim_insert_esc
 }
 
 #[tokio::test]
+async fn workflow_subagents_reject_backtrack_esc_without_stealing_vim_insert_escape() {
+    let mut app = make_test_app().await;
+    let esc = crossterm::event::KeyEvent::new(crossterm::event::KeyCode::Esc, KeyModifiers::NONE);
+    let thread_id =
+        ThreadId::from_string("00000000-0000-0000-0000-000000000201").expect("valid thread id");
+
+    app.active_thread_id = Some(thread_id);
+    app.agent_navigation.mark_workflow_agents([thread_id]);
+    assert!(app.chat_widget.composer_is_empty());
+    assert!(!app.should_handle_backtrack_esc(esc));
+    assert!(app.should_reject_workflow_backtrack_esc(esc));
+
+    app.chat_widget.toggle_vim_mode_and_notify();
+    app.chat_widget
+        .handle_key_event(crossterm::event::KeyEvent::new(
+            crossterm::event::KeyCode::Char('i'),
+            KeyModifiers::NONE,
+        ));
+
+    assert!(app.chat_widget.should_handle_vim_insert_escape(esc));
+    assert!(!app.should_handle_backtrack_esc(esc));
+    assert!(!app.should_reject_workflow_backtrack_esc(esc));
+}
+
+#[tokio::test]
 async fn side_backtrack_rejection_reports_unavailable_message_snapshot() {
     let (mut app, mut app_event_rx, _op_rx) = make_test_app_with_channels().await;
     app.backtrack.primed = true;
@@ -9233,6 +9258,34 @@ async fn side_backtrack_rejection_reports_unavailable_message_snapshot() {
         .join("\n");
     assert_app_snapshot!(
         "side_backtrack_rejection_reports_unavailable_message",
+        rendered
+    );
+}
+
+#[tokio::test]
+async fn workflow_backtrack_rejection_reports_unavailable_message_snapshot() {
+    let (mut app, mut app_event_rx, _op_rx) = make_test_app_with_channels().await;
+    let thread_id =
+        ThreadId::from_string("00000000-0000-0000-0000-000000000202").expect("valid thread id");
+    app.active_thread_id = Some(thread_id);
+    app.agent_navigation.mark_workflow_agents([thread_id]);
+    app.backtrack.primed = true;
+
+    app.reject_workflow_backtrack_esc();
+
+    assert!(!app.backtrack.primed);
+    let cell = match app_event_rx.try_recv() {
+        Ok(AppEvent::InsertHistoryCell(cell)) => cell,
+        other => panic!("expected InsertHistoryCell event, got {other:?}"),
+    };
+    let rendered = cell
+        .display_lines(/*width*/ 80)
+        .into_iter()
+        .map(|line| line.to_string())
+        .collect::<Vec<_>>()
+        .join("\n");
+    assert_app_snapshot!(
+        "workflow_backtrack_rejection_reports_unavailable_message",
         rendered
     );
 }

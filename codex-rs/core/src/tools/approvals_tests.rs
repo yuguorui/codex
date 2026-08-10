@@ -179,6 +179,137 @@ async fn non_utf8_cwd_preserves_approval_routing(
     Ok(())
 }
 
+#[test]
+fn extension_resolution_preserves_denial_source_and_bounds_rejection() {
+    let resolution = ApprovalResolution {
+        decision: ReviewDecision::denied("denied detail ".repeat(10_000)),
+        source: ApprovalResolutionSource::Guardian,
+    };
+
+    let ToolApprovalOutcome::Denied { rejection, source } =
+        resolution.into_extension_outcome(&model_info_from_slug("acting-model"))
+    else {
+        panic!("expected detailed denial");
+    };
+    assert_eq!(source, ToolApprovalDenialSource::AutomaticReviewer);
+    assert!(codex_utils_output_truncation::approx_token_count(&rejection) <= 900);
+}
+
+#[test]
+fn extension_action_reuses_complete_structured_guardian_action() {
+    let action = serde_json::json!({
+        "tool": "workflow",
+        "script": "return agent(args.prompt)",
+        "arguments": { "prompt": "review the release" },
+    });
+    let guardian_request = ApprovalAction::ExtensionTool {
+        id: "call-workflow".to_string(),
+        tool_name: "Workflow".to_string(),
+        hook_tool_name: HookToolName::new("Workflow"),
+        prompt: extension_approval_prompt(),
+        action: action.clone(),
+        artifact: Some(codex_tools::ToolApprovalArtifact::from_contents(
+            serde_json::to_string(&action).expect("serialize action"),
+        )),
+    }
+    .into_guardian_request(/*exec_command_cwd_convention*/ None)
+    .expect("bounded action should be reviewable");
+
+    let crate::guardian::GuardianApprovalRequest::ExtensionTool {
+        id,
+        tool_name,
+        artifact,
+    } = guardian_request
+    else {
+        panic!("extension actions should use the existing structured Guardian request");
+    };
+    assert_eq!(id, "call-workflow");
+    assert_eq!(tool_name, "Workflow");
+    let expected = codex_tools::ToolApprovalArtifact::from_contents(
+        serde_json::to_string(&action).expect("serialize action"),
+    );
+    assert_eq!(artifact.sha256(), expected.sha256());
+    assert_eq!(artifact.byte_length(), expected.contents().len());
+}
+
+#[test]
+fn large_extension_action_uses_content_addressed_guardian_artifact() {
+    let action = serde_json::json!({ "script": "!".repeat(100_000) });
+    let request = ApprovalAction::ExtensionTool {
+        id: "call-workflow".to_string(),
+        tool_name: "Workflow".to_string(),
+        hook_tool_name: HookToolName::new("Workflow"),
+        prompt: extension_approval_prompt(),
+        action: action.clone(),
+        artifact: Some(codex_tools::ToolApprovalArtifact::from_contents(
+            serde_json::to_string(&action).expect("serialize action"),
+        )),
+    }
+    .into_guardian_request(/*exec_command_cwd_convention*/ None)
+    .expect("large artifact should remain automatically reviewable");
+
+    assert!(matches!(
+        request,
+        crate::guardian::GuardianApprovalRequest::ExtensionTool { .. }
+    ));
+}
+
+#[test]
+fn extension_artifact_must_match_structured_action() {
+    let action = (0..70).fold(serde_json::json!("leaf"), |value, _| {
+        serde_json::Value::Array(vec![value])
+    });
+    let compact_bytes = serde_json::to_string(&action)
+        .expect("nested action should serialize")
+        .len();
+    assert!(compact_bytes < 8_000);
+
+    let result = ApprovalAction::ExtensionTool {
+        id: "call-workflow".to_string(),
+        tool_name: "Workflow".to_string(),
+        hook_tool_name: HookToolName::new("Workflow"),
+        prompt: extension_approval_prompt(),
+        action,
+        artifact: Some(codex_tools::ToolApprovalArtifact::from_contents(
+            "{}".to_string(),
+        )),
+    }
+    .into_guardian_request(/*exec_command_cwd_convention*/ None);
+
+    let error = result.expect_err("artifact contents must match the action");
+    assert!(error.to_string().contains("does not match"));
+}
+
+#[test]
+fn extension_artifact_hash_must_match_its_contents() {
+    let action = serde_json::json!({"tool": "Workflow"});
+    let result = ApprovalAction::ExtensionTool {
+        id: "call-workflow".to_string(),
+        tool_name: "Workflow".to_string(),
+        hook_tool_name: HookToolName::new("Workflow"),
+        prompt: extension_approval_prompt(),
+        action: action.clone(),
+        artifact: Some(codex_tools::ToolApprovalArtifact::new(
+            "0".repeat(64),
+            serde_json::to_string(&action).expect("serialize action"),
+        )),
+    }
+    .into_guardian_request(/*exec_command_cwd_convention*/ None);
+
+    let error = result.expect_err("artifact hash must bind its contents");
+    assert!(error.to_string().contains("SHA-256"));
+}
+
+fn extension_approval_prompt() -> ToolApprovalRequest {
+    ToolApprovalRequest {
+        call_id: "call-workflow".to_string(),
+        id: "workflow-approval".to_string(),
+        header: "Workflow".to_string(),
+        question: "Run this workflow?".to_string(),
+        approve_label: "Run workflow".to_string(),
+        deny_label: "Cancel".to_string(),
+    }
+}
 #[tokio::test]
 async fn explicit_mcp_reviewer_override_takes_precedence_over_action_context() {
     let (session, turn, events) = make_session_and_context_with_rx().await;

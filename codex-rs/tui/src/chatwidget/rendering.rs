@@ -130,7 +130,9 @@ impl ChatWidget {
                 .as_renderable_with_composer_right_reserve(/*composer_right_reserve*/ 0);
         }
 
+        let rendered_width = self.last_rendered_width.get().unwrap_or(u16::MAX);
         let active_cell_right_reserve = self.ambient_pet_wrap_reserved_cols();
+        let composer_right_reserve = /*composer_right_reserve*/ 0;
         let active_cell_renderable = match &self.transcript.active_cell {
             Some(cell) => RenderableItem::Owned(Box::new(TranscriptAreaRenderable {
                 child: cell.as_ref(),
@@ -156,6 +158,31 @@ impl ChatWidget {
             })),
             None => RenderableItem::Owned(Box::new(())),
         };
+        let bottom_pane_renderable = self
+            .bottom_pane
+            .as_renderable_with_composer_right_reserve(composer_right_reserve)
+            .inset(Insets::tlbr(
+                /*top*/ 1, /*left*/ 0, /*bottom*/ 0, /*right*/ 0,
+            ));
+        let active_workflow_cell_renderable = if self.workflows.has_active_runs() {
+            let reserved_height = bottom_pane_renderable
+                .desired_height(rendered_width)
+                .saturating_add(/*workflow_separator*/ 1);
+            let max_height = self
+                .last_screen_height
+                .get()
+                .unwrap_or(u16::MAX)
+                .saturating_sub(reserved_height)
+                .max(/*workflow_rows*/ 1);
+            RenderableItem::Owned(Box::new(ConstrainedWorkflowRenderable {
+                workflow: &self.workflows,
+                top: 1,
+                right: active_cell_right_reserve,
+                max_height,
+            }))
+        } else {
+            RenderableItem::Owned(Box::new(()))
+        };
         let mut flex = FlexRenderable::new();
         flex.push(/*flex*/ 1, active_cell_renderable);
         if let Some(cell) = self.realtime_conversation.live_transcript_cell.as_ref() {
@@ -169,6 +196,7 @@ impl ChatWidget {
                 })),
             );
         }
+        flex.push(/*flex*/ 0, active_workflow_cell_renderable);
         if let Some(cell) = self.pending_token_activity_output() {
             flex.push(
                 /*flex*/ 1,
@@ -196,20 +224,30 @@ impl ChatWidget {
                 transcript_hint: self.bottom_pane.transcript_shortcut_hint(),
             }))
         } else {
-            self.bottom_pane
-                .as_renderable_with_composer_right_reserve(active_cell_right_reserve)
+            bottom_pane_renderable
         };
-        flex.push(
-            /*flex*/ 0,
-            bottom.inset(Insets::tlbr(
-                /*top*/ 1, /*left*/ 0, /*bottom*/ 0, /*right*/ 0,
-            )),
-        );
-        RenderableItem::Owned(Box::new(flex))
+        flex.push(/*flex*/ 0, bottom);
+        let content = RenderableItem::Owned(Box::new(flex));
+        match self
+            .ambient_pet
+            .as_ref()
+            .filter(|pet| pet.text_height().is_some())
+        {
+            Some(pet) => RenderableItem::Owned(Box::new(TextPetRenderable {
+                child: content,
+                pet,
+                visible: self.bottom_pane.no_modal_or_popup_active(),
+            })),
+            None => content,
+        }
     }
 
     pub(crate) fn note_rendered_width(&self, width: u16) {
         self.last_rendered_width.set(Some(width));
+    }
+
+    pub(crate) fn note_screen_height(&self, height: u16) {
+        self.last_screen_height.set(Some(height));
     }
 }
 
@@ -306,6 +344,50 @@ impl TranscriptAreaRenderable<'_> {
             area.width.saturating_sub(self.right).max(1),
             height,
         )
+    }
+}
+
+/// Caps the live workflow tail so fixed-height details cannot push the composer
+/// out of the terminal viewport. When the full cell fits, it renders unchanged.
+struct ConstrainedWorkflowRenderable<'a> {
+    workflow: &'a WorkflowUiState,
+    top: u16,
+    right: u16,
+    max_height: u16,
+}
+
+impl Renderable for ConstrainedWorkflowRenderable<'_> {
+    fn render(&self, area: Rect, buf: &mut Buffer) {
+        let child_width = area.width.saturating_sub(self.right).max(1);
+        let child_area = Rect::new(
+            area.x,
+            area.y.saturating_add(self.top),
+            child_width,
+            area.height.saturating_sub(self.top),
+        );
+        let lines = self
+            .workflow
+            .display_lines_for_height(child_area.width, child_area.height);
+        Clear.render(child_area, buf);
+        Paragraph::new(lines)
+            .wrap(Wrap { trim: false })
+            .render(child_area, buf);
+    }
+
+    fn desired_height(&self, width: u16) -> u16 {
+        let child_width = width.saturating_sub(self.right).max(1);
+        let child_height = self
+            .max_height
+            .saturating_sub(self.top)
+            .max(/*workflow_rows*/ 1);
+        let lines = self
+            .workflow
+            .display_lines_for_height(child_width, child_height);
+        Paragraph::new(lines)
+            .wrap(Wrap { trim: false })
+            .line_count(child_width)
+            .min(child_height.into()) as u16
+            + self.top
     }
 }
 

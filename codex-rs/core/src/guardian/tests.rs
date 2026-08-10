@@ -952,6 +952,7 @@ fn collect_guardian_transcript_entries(
 ) -> Vec<ConversationTranscriptEntry> {
     prompt::collect_guardian_context(
         history,
+        /*excluded_call_id*/ None,
         node_repl_result_token_limit,
         &[],
         &[],

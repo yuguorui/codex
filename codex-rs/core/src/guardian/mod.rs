@@ -2,6 +2,7 @@
 //! The extension chooses policy and evidence; core enforces permissions and mandatory
 //! review requirements. Each approval retains its issuing context and cancellation.
 
+mod approval_artifact;
 mod approval_request;
 mod assessment;
 mod coverage;
@@ -30,6 +31,7 @@ use crate::session::step_settings::ResolvedStepSettings;
 use crate::session::turn_context::TurnContext;
 use crate::tools::sandboxing::ApprovalRequestReasons;
 
+pub(crate) use approval_artifact::GuardianApprovalArtifact;
 pub(crate) use approval_request::GuardianApprovalRequest;
 pub(crate) use approval_request::GuardianMcpAnnotations;
 pub(crate) use approval_request::GuardianNetworkAccessTrigger;

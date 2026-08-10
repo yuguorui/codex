@@ -92,6 +92,7 @@ pub(crate) async fn run_codex_thread_interactive(
         config,
         allow_provider_model_fallback: false,
         user_instructions,
+        frozen_project_instructions: None,
         installation_id: parent_session.installation_id.clone(),
         auth_manager,
         models_manager,

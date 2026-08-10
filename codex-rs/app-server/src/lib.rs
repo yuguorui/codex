@@ -135,6 +135,7 @@ mod transport;
 mod turn_cost_worker;
 mod user_verification;
 mod user_verification_response;
+mod workflow_events;
 
 pub use crate::code_mode_host::AppServerCodeModeHostArgs;
 pub use crate::code_mode_host::CodeModeHostTransport;
