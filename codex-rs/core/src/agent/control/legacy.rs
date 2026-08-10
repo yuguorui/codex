@@ -8,14 +8,16 @@ impl AgentControl {
     pub(crate) async fn shutdown_live_agent(&self, agent_id: ThreadId) -> CodexResult<String> {
         let state = self.upgrade()?;
         let result = if let Ok(thread) = state.get_thread(agent_id).await {
-            thread
-                .session
-                .ensure_rollout_materialized(PersistContext::Standard)
-                .await;
-            thread.session.flush_rollout().await?;
-            let result = if matches!(thread.agent_status().await, AgentStatus::Shutdown) {
+            let result = if thread.session.is_closing()
+                || matches!(thread.agent_status().await, AgentStatus::Shutdown)
+            {
                 Ok(String::new())
             } else {
+                thread
+                    .session
+                    .ensure_rollout_materialized(PersistContext::Standard)
+                    .await;
+                thread.session.flush_rollout().await?;
                 state
                     .send_op(
                         agent_id,
@@ -45,9 +47,17 @@ impl AgentControl {
 
     /// Mark `agent_id` as explicitly closed in persisted spawn-edge state, then shut down the
     /// agent and any live descendants reached from the in-memory tree.
-    pub(crate) async fn close_agent(&self, agent_id: ThreadId) -> CodexResult<String> {
+    pub(crate) async fn close_agent(
+        &self,
+        caller_thread_id: ThreadId,
+        agent_id: ThreadId,
+    ) -> CodexResult<String> {
+        self.authorize_agent_access(caller_thread_id, agent_id)?;
+        let known_agent = self
+            .state
+            .registration_for_close(agent_id)
+            .ok_or(CodexErr::ThreadNotFound(agent_id))?;
         let state = self.upgrade()?;
-        let known_agent = self.state.agent_metadata_for_thread(agent_id).is_some();
         match state.get_thread(agent_id).await {
             Ok(thread) => {
                 if !thread.config_snapshot().await.ephemeral
@@ -62,9 +72,7 @@ impl AgentControl {
                     warn!("failed to persist thread-spawn edge status for {agent_id}: {err}");
                 }
             }
-            Err(err)
-                if known_agent && matches!(err.details(), CodexErrorDetails::ThreadNotFound(_)) =>
-            {
+            Err(err) if matches!(err.details(), CodexErrorDetails::ThreadNotFound(_)) => {
                 if let Some(agent_graph_store) = state.agent_graph_store()
                     && let Err(err) = agent_graph_store
                         .set_thread_spawn_edge_status(
@@ -78,23 +86,25 @@ impl AgentControl {
                     )));
                 }
             }
-            Err(err) if matches!(err.details(), CodexErrorDetails::ThreadNotFound(_)) => {}
             Err(err) => {
                 warn!("failed to inspect agent before close {agent_id}: {err}");
             }
         }
-        match Box::pin(self.shutdown_agent_tree(agent_id)).await {
+        let result = match Box::pin(self.shutdown_agent_tree(agent_id)).await {
             Err(err)
-                if known_agent
-                    && matches!(
-                        err.details(),
-                        CodexErrorDetails::ThreadNotFound(_) | CodexErrorDetails::InternalAgentDied
-                    ) =>
+                if matches!(
+                    err.details(),
+                    CodexErrorDetails::ThreadNotFound(_) | CodexErrorDetails::InternalAgentDied
+                ) =>
             {
                 Ok(String::new())
             }
             result => result,
+        };
+        if result.is_ok() {
+            self.state.remember_closed_agent(known_agent);
         }
+        result
     }
 
     /// Shut down `agent_id` and any live descendants reachable from the in-memory spawn tree.

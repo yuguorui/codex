@@ -8,6 +8,7 @@ use crate::session::turn_context::TurnContext;
 use crate::tools::context::FunctionToolOutput;
 use crate::tools::context::ToolOutput;
 use crate::tools::context::ToolPayload;
+use codex_features::Feature;
 use codex_models_manager::manager::RefreshStrategy;
 use codex_protocol::AgentPath;
 use codex_protocol::ThreadId;
@@ -179,6 +180,14 @@ pub(crate) fn build_agent_spawn_config(
     turn: &TurnContext,
 ) -> Result<Config, FunctionCallError> {
     let mut config = build_agent_shared_config(turn)?;
+    config
+        .features
+        .disable(Feature::Workflows)
+        .map_err(|error| {
+            FunctionCallError::RespondToModel(format!(
+                "managed policy prevents subagent workflow isolation: {error}"
+            ))
+        })?;
     config.base_instructions = Some(base_instructions.text.clone());
     config.base_instructions_provenance = base_instructions.provenance.clone();
     Ok(config)

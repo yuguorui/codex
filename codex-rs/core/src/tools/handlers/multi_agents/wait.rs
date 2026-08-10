@@ -9,6 +9,7 @@ use futures::FutureExt;
 use futures::StreamExt;
 use futures::stream::FuturesUnordered;
 use std::collections::HashMap;
+use std::collections::HashSet;
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::watch::Receiver;
@@ -68,12 +69,16 @@ impl Handler {
         let receiver_thread_ids = parse_agent_id_targets(args.targets)?;
         let mut receiver_agents = Vec::with_capacity(receiver_thread_ids.len());
         let mut target_by_thread_id = HashMap::with_capacity(receiver_thread_ids.len());
+        let mut unauthorized_thread_ids = HashSet::new();
         for receiver_thread_id in &receiver_thread_ids {
             let agent_metadata = session
                 .services
                 .agent_control
-                .get_agent_metadata(*receiver_thread_id)
-                .unwrap_or_default();
+                .authorize_agent_access(session.thread_id, *receiver_thread_id)
+                .unwrap_or_else(|_| {
+                    unauthorized_thread_ids.insert(*receiver_thread_id);
+                    Default::default()
+                });
             target_by_thread_id.insert(
                 *receiver_thread_id,
                 agent_metadata
@@ -120,6 +125,10 @@ impl Handler {
         let mut status_rxs = Vec::with_capacity(receiver_thread_ids.len());
         let mut initial_final_statuses = Vec::new();
         for id in &receiver_thread_ids {
+            if unauthorized_thread_ids.contains(id) {
+                initial_final_statuses.push((*id, AgentStatus::NotFound));
+                continue;
+            }
             match session.services.agent_control.subscribe_status(*id).await {
                 Ok(rx) => {
                     let status = rx.borrow().clone();

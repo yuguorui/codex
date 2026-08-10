@@ -1053,6 +1053,9 @@
             "windows_sandbox_service": {
               "type": "boolean"
             },
+            "workflows": {
+              "type": "boolean"
+            },
             "workspace_dependencies": {
               "type": "boolean"
             },
@@ -6516,6 +6519,9 @@
           "type": "boolean"
         },
         "windows_sandbox_service": {
+          "type": "boolean"
+        },
+        "workflows": {
           "type": "boolean"
         },
         "workspace_dependencies": {
