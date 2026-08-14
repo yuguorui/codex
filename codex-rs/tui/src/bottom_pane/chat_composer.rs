@@ -443,6 +443,7 @@ fn parent_owned_command_is_allowed(command: SlashCommand, args: &str) -> bool {
                 | SlashCommand::Title
                 | SlashCommand::Statusline
                 | SlashCommand::Theme
+                | SlashCommand::Pet
                 | SlashCommand::Pets
                 | SlashCommand::Ps
                 | SlashCommand::Stop
@@ -4738,6 +4739,10 @@ impl ChatComposer {
                     hint_rect
                 } else {
                     popup_rect
+                };
+                let hint_rect = Rect {
+                    width: hint_rect.width.saturating_sub(textarea_right_reserve),
+                    ..hint_rect
                 };
                 if let Some(input) = self.draft.textarea.vim_query() {
                     input.render(inset_footer_hint_area(hint_rect), buf);
@@ -9628,7 +9633,7 @@ mod tests {
     }
 
     #[test]
-    fn slash_popup_pets_for_pet_ui() {
+    fn slash_popup_pet_ui() {
         use ratatui::Terminal;
         use ratatui::backend::TestBackend;
 
@@ -9654,7 +9659,7 @@ mod tests {
     }
 
     #[test]
-    fn slash_popup_pets_for_pet_logic() {
+    fn slash_popup_pet_logic() {
         use super::super::command_popup::CommandItem;
         let (tx, _rx) = unbounded_channel::<AppEvent>();
         let sender = AppEventSender::new(tx);
@@ -9675,7 +9680,7 @@ mod tests {
                 Some(CommandItem::ServiceTier(command)) => {
                     panic!("expected pets command, got service tier {command:?}")
                 }
-                None => panic!("no selected command for '/pet'"),
+                None => panic!("no selected command for '/pets'"),
             },
             _ => panic!("slash popup not active after typing '/pet'"),
         }
