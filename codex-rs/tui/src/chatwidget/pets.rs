@@ -6,6 +6,7 @@ use codex_config::types::TuiPetAnchor;
 pub(super) fn load_ambient_pet(
     config: &Config,
     frame_requester: FrameRequester,
+    support: crate::pets::PetImageSupport,
 ) -> Option<crate::pets::AmbientPet> {
     let selected_pet = config.tui_pet.as_deref()?;
     if selected_pet == crate::pets::DISABLED_PET_ID {
@@ -17,6 +18,7 @@ pub(super) fn load_ambient_pet(
         &config.codex_home,
         frame_requester,
         config.animations,
+        support,
     )
     .ok()
 }
@@ -37,6 +39,7 @@ pub(super) fn start_configured_pet_load_if_needed(
 
     let codex_home = config.codex_home.clone();
     let animations_enabled = config.animations;
+    let support = detected_pet_image_support();
     let event_pet_id = pet_id.clone();
     spawn_pet_load(
         async move {
@@ -45,6 +48,7 @@ pub(super) fn start_configured_pet_load_if_needed(
                 codex_home,
                 frame_requester,
                 animations_enabled,
+                support,
                 &pet_http_client,
             )
             .await
@@ -99,20 +103,31 @@ impl ChatWidget {
             .draw_request(area, anchor_bottom_y)
     }
 
-    pub(super) fn ambient_pet_wrap_reserved_cols(&self) -> u16 {
-        self.ambient_pet
-            .as_ref()
-            .filter(|pet| pet.image_enabled())
-            .map(|pet| {
-                pet.image_columns()
-                    .saturating_add(AMBIENT_PET_WRAP_GAP_COLUMNS)
-            })
-            .unwrap_or(0)
+    /// Columns reserved from the history wrap width for a pet that floats over the
+    /// message area. Only terminal-image sprites reserve history columns; the
+    /// ASCII Bongo Cat is drawn directly into the buffer as a corner overlay and
+    /// does not narrow the history message box.
+    pub(super) fn ambient_pet_wrap_reserved_cols(&self, width: u16) -> u16 {
+        let Some(pet) = self.ambient_pet.as_ref().filter(|pet| pet.image_enabled()) else {
+            return 0;
+        };
+        pet_overlay_reserved_cols(pet, width)
+    }
+
+    /// Columns reserved from the composer width so typed text stays clear of
+    /// the pet overlay drawn into the bottom-right corner. Only the ASCII Bongo
+    /// Cat reserves composer columns: terminal-image pets float above the
+    /// composer, so they never cover the input box.
+    pub(super) fn ambient_pet_composer_reserved_cols(&self, width: u16) -> u16 {
+        let Some(pet) = self.ambient_pet.as_ref().filter(|pet| pet.is_ascii_bongo()) else {
+            return 0;
+        };
+        pet_overlay_reserved_cols(pet, width)
     }
 
     pub(crate) fn history_wrap_width(&self, width: u16) -> u16 {
         width
-            .saturating_sub(self.ambient_pet_wrap_reserved_cols())
+            .saturating_sub(self.ambient_pet_wrap_reserved_cols(width))
             .max(1)
     }
 
@@ -139,29 +154,32 @@ impl ChatWidget {
     }
 
     pub(crate) fn open_pets_picker(&mut self) {
-        if self.warn_if_pets_unsupported() {
-            return;
-        }
-
         self.pet_picker_preview_state.clear();
         self.pet_picker_preview_pet = None;
+        let support = self.pet_image_support();
         let params = crate::pets::build_pet_picker_params(
             self.config.tui_pet.as_deref(),
             &self.config.codex_home,
             self.pet_picker_preview_state.clone(),
+            support,
         );
         self.bottom_pane.show_selection_view(params);
-        let initial_pet_id = self
-            .config
-            .tui_pet
-            .as_deref()
-            .unwrap_or(crate::pets::DEFAULT_PET_ID)
-            .to_string();
+        let initial_pet_id = if support.protocol().is_none()
+            && self.config.tui_pet.as_deref() != Some(crate::pets::DISABLED_PET_ID)
+        {
+            crate::pets::BONGO_CAT_PET_ID.to_string()
+        } else {
+            self.config
+                .tui_pet
+                .as_deref()
+                .unwrap_or(crate::pets::DEFAULT_PET_ID)
+                .to_string()
+        };
         self.start_pet_picker_preview(initial_pet_id);
     }
 
     pub(crate) fn select_pet_by_id(&mut self, pet_id: String) {
-        if self.warn_if_pets_unsupported() {
+        if pet_id != crate::pets::BONGO_CAT_PET_ID && self.warn_if_pets_unsupported() {
             return;
         }
 
@@ -178,25 +196,20 @@ impl ChatWidget {
         true
     }
 
-    fn pet_image_support(&self) -> crate::pets::PetImageSupport {
+    pub(crate) fn pet_image_support(&self) -> crate::pets::PetImageSupport {
         #[cfg(test)]
         if let Some(support) = self.pet_image_support_override {
             return support;
         }
 
-        #[cfg(test)]
-        return crate::pets::PetImageSupport::Unsupported(
-            crate::pets::PetImageUnsupportedReason::Terminal,
-        );
-
-        #[cfg(not(test))]
-        crate::pets::detect_pet_image_support()
+        detected_pet_image_support()
     }
 
     /// Set the pet preselected by the TUI picker in the widget's config copy.
     pub(crate) fn set_tui_pet(&mut self, pet: Option<String>) {
         self.config.tui_pet = pet;
-        self.ambient_pet = load_ambient_pet(&self.config, self.frame_requester.clone());
+        let support = self.pet_image_support();
+        self.ambient_pet = load_ambient_pet(&self.config, self.frame_requester.clone(), support);
         self.apply_ambient_pet_image_support_override_for_tests();
         self.request_redraw();
     }
@@ -235,6 +248,13 @@ impl ChatWidget {
             return;
         }
 
+        let support = self.pet_image_support();
+        if pet_id == crate::pets::BONGO_CAT_PET_ID && support.protocol().is_none() {
+            self.pet_picker_preview_state.set_ascii_bongo();
+            self.request_redraw();
+            return;
+        }
+
         self.pet_picker_preview_state.set_loading();
         self.request_redraw();
 
@@ -249,6 +269,7 @@ impl ChatWidget {
                     codex_home,
                     frame_requester,
                     /*animations_enabled*/ false,
+                    support,
                     &pet_http_client,
                 )
                 .await
@@ -270,7 +291,11 @@ impl ChatWidget {
 
         match result {
             Ok(pet) => {
-                self.pet_picker_preview_state.set_ready();
+                if pet.is_ascii_bongo() {
+                    self.pet_picker_preview_state.set_ascii_bongo();
+                } else {
+                    self.pet_picker_preview_state.set_ready();
+                }
                 self.pet_picker_preview_pet = Some(pet);
                 #[cfg(test)]
                 if let Some(support) = self.pet_image_support_override
@@ -334,6 +359,25 @@ impl ChatWidget {
             )),
         );
     }
+}
+
+fn pet_overlay_reserved_cols(pet: &crate::pets::AmbientPet, width: u16) -> u16 {
+    if pet.hidden_at_width(width) {
+        return 0;
+    }
+    pet.layout_columns()
+        .map(|columns| columns.saturating_add(AMBIENT_PET_WRAP_GAP_COLUMNS))
+        .unwrap_or(0)
+}
+
+#[cfg(not(test))]
+fn detected_pet_image_support() -> crate::pets::PetImageSupport {
+    crate::pets::ProtocolSelection::Auto.resolve()
+}
+
+#[cfg(test)]
+fn detected_pet_image_support() -> crate::pets::PetImageSupport {
+    crate::pets::PetImageSupport::Unsupported(crate::pets::PetImageUnsupportedReason::Terminal)
 }
 
 fn spawn_pet_load<T>(
