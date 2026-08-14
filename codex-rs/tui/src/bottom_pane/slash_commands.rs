@@ -125,7 +125,9 @@ pub(crate) fn find_builtin_command(name: &str, flags: BuiltinCommandFlags) -> Op
         ..flags
     })
     .into_iter()
-    .any(|(_, visible_cmd)| visible_cmd == cmd)
+    .any(|(_, visible_cmd)| {
+        visible_cmd == cmd || (cmd == SlashCommand::Pet && visible_cmd == SlashCommand::Pets)
+    })
     .then_some(cmd)
 }
 
@@ -221,6 +223,14 @@ mod tests {
         assert_eq!(
             find_builtin_command("stop", all_enabled_flags()),
             Some(SlashCommand::Stop)
+        );
+    }
+
+    #[test]
+    fn hidden_pet_alias_still_resolves_for_dispatch() {
+        assert_eq!(
+            find_builtin_command("pet", all_enabled_flags()),
+            Some(SlashCommand::Pet)
         );
     }
 
