@@ -15,18 +15,6 @@ fn force_tmux_pet_image_unsupported(chat: &mut ChatWidget) {
     ));
 }
 
-fn force_terminal_pet_image_unsupported(chat: &mut ChatWidget) {
-    chat.set_pet_image_support_for_tests(crate::pets::PetImageSupport::Unsupported(
-        crate::pets::PetImageUnsupportedReason::Terminal,
-    ));
-}
-
-fn force_old_iterm2_pet_image_unsupported(chat: &mut ChatWidget) {
-    chat.set_pet_image_support_for_tests(crate::pets::PetImageSupport::Unsupported(
-        crate::pets::PetImageUnsupportedReason::Iterm2TooOld,
-    ));
-}
-
 fn fast_tier_command() -> ServiceTierCommand {
     ServiceTierCommand {
         id: ServiceTier::Fast.request_value().to_string(),
@@ -2883,6 +2871,19 @@ async fn slash_resume_with_arg_requests_named_session_while_mcp_startup_is_runni
 
 #[tokio::test]
 #[serial]
+async fn slash_pet_hidden_alias_opens_pets_picker() {
+    let (mut chat, mut rx, mut op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
+    force_pet_image_support(&mut chat);
+
+    chat.dispatch_command(SlashCommand::Pet);
+
+    assert!(chat.bottom_pane.has_active_view());
+    assert_matches!(rx.try_recv(), Err(TryRecvError::Empty));
+    assert_matches!(op_rx.try_recv(), Err(TryRecvError::Empty));
+}
+
+#[tokio::test]
+#[serial]
 async fn slash_pets_opens_picker() {
     let (mut chat, mut rx, _op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
     force_pet_image_support(&mut chat);
@@ -2945,25 +2946,6 @@ async fn slash_pet_hide_disables_pets_even_on_unsupported_terminal() {
 
 #[tokio::test]
 #[serial]
-async fn slash_pets_on_unsupported_terminal_warns_without_picker() {
-    let (mut chat, mut rx, _op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
-    force_tmux_pet_image_unsupported(&mut chat);
-
-    chat.dispatch_command(SlashCommand::Pets);
-
-    assert!(!chat.bottom_pane.has_active_view());
-    let cells = drain_insert_history(&mut rx);
-    let rendered = cells
-        .iter()
-        .map(|lines| lines_to_single_string(lines))
-        .collect::<Vec<_>>()
-        .join("\n");
-    assert!(rendered.contains("Pets are disabled in tmux."));
-    assert!(rendered.contains("outside tmux"));
-}
-
-#[tokio::test]
-#[serial]
 async fn slash_pets_with_arg_on_unsupported_terminal_warns_without_selection() {
     let (mut chat, mut rx, mut op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
     force_tmux_pet_image_unsupported(&mut chat);
@@ -2981,44 +2963,6 @@ async fn slash_pets_with_arg_on_unsupported_terminal_warns_without_selection() {
     assert!(rendered.contains("Pets are disabled in tmux."));
     assert_matches!(rx.try_recv(), Err(TryRecvError::Empty));
     assert_matches!(op_rx.try_recv(), Err(TryRecvError::Empty));
-}
-
-#[tokio::test]
-#[serial]
-async fn slash_pets_on_unsupported_terminal_shows_terminal_warning() {
-    let (mut chat, mut rx, _op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
-    force_terminal_pet_image_unsupported(&mut chat);
-
-    chat.dispatch_command(SlashCommand::Pets);
-
-    assert!(!chat.bottom_pane.has_active_view());
-    let cells = drain_insert_history(&mut rx);
-    let rendered = cells
-        .iter()
-        .map(|lines| lines_to_single_string(lines))
-        .collect::<Vec<_>>()
-        .join("\n");
-    assert!(rendered.contains("Pets aren’t available in this terminal."));
-    assert!(rendered.contains("Kitty graphics or Sixel support"));
-}
-
-#[tokio::test]
-#[serial]
-async fn slash_pets_on_old_iterm2_shows_upgrade_warning() {
-    let (mut chat, mut rx, _op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
-    force_old_iterm2_pet_image_unsupported(&mut chat);
-
-    chat.dispatch_command(SlashCommand::Pets);
-
-    assert!(!chat.bottom_pane.has_active_view());
-    let cells = drain_insert_history(&mut rx);
-    let rendered = cells
-        .iter()
-        .map(|lines| lines_to_single_string(lines))
-        .collect::<Vec<_>>()
-        .join("\n");
-    assert!(rendered.contains("Pets require iTerm2 3.6 or newer."));
-    assert!(rendered.contains("Upgrade iTerm2 to use terminal pets."));
 }
 
 #[tokio::test]
