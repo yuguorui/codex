@@ -19,11 +19,16 @@ use std::time::Instant;
 
 use anyhow::Context;
 use anyhow::Result;
+use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
 
 use crate::tui::FrameRequester;
 
+use super::BONGO_CAT_PET_ID;
 use super::DEFAULT_PET_ID;
+use super::bongo::BONGO_CAT_HEIGHT;
+use super::bongo::BONGO_CAT_WIDTH;
+use super::bongo::BongoCat;
 use super::frames;
 use super::image_protocol::ImageProtocol;
 use super::image_protocol::PetImageSupport;
@@ -49,6 +54,12 @@ pub(crate) enum PetNotificationKind {
     Waiting,
     Review,
     Failed,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum AmbientPetActivity {
+    Idle,
+    Typing { idle_in: Duration },
 }
 
 impl PetNotificationKind {
@@ -125,6 +136,17 @@ pub(crate) struct AmbientPetDraw {
 
 #[derive(Debug)]
 pub(crate) struct AmbientPet {
+    kind: AmbientPetKind,
+}
+
+#[derive(Debug)]
+enum AmbientPetKind {
+    Sprite(Box<SpritePet>),
+    Bongo(BongoCat),
+}
+
+#[derive(Debug)]
+struct SpritePet {
     pet: Pet,
     support: PetImageSupport,
     frames: Vec<PathBuf>,
@@ -136,6 +158,123 @@ pub(crate) struct AmbientPet {
 }
 
 impl AmbientPet {
+    pub(crate) fn load(
+        selected_pet: Option<&str>,
+        codex_home: &std::path::Path,
+        frame_requester: FrameRequester,
+        animations_enabled: bool,
+    ) -> Result<Self> {
+        if selected_pet == Some(BONGO_CAT_PET_ID) {
+            return Ok(Self {
+                kind: AmbientPetKind::Bongo(BongoCat::new(frame_requester, animations_enabled)),
+            });
+        }
+
+        SpritePet::load(
+            selected_pet,
+            codex_home,
+            frame_requester,
+            animations_enabled,
+        )
+        .map(|pet| Self {
+            kind: AmbientPetKind::Sprite(Box::new(pet)),
+        })
+    }
+
+    pub(crate) fn set_notification(&mut self, kind: PetNotificationKind, body: Option<String>) {
+        if let AmbientPetKind::Sprite(pet) = &mut self.kind {
+            pet.set_notification(kind, body);
+        }
+    }
+
+    pub(crate) fn image_enabled(&self) -> bool {
+        match &self.kind {
+            AmbientPetKind::Sprite(pet) => pet.image_enabled(),
+            AmbientPetKind::Bongo(_) => false,
+        }
+    }
+
+    pub(crate) fn layout_columns(&self) -> Option<u16> {
+        match &self.kind {
+            AmbientPetKind::Sprite(pet) => pet.image_enabled().then(|| pet.image_columns()),
+            AmbientPetKind::Bongo(_) => Some(BONGO_CAT_WIDTH),
+        }
+    }
+
+    pub(crate) fn text_height(&self) -> Option<u16> {
+        match &self.kind {
+            AmbientPetKind::Sprite(_) => None,
+            AmbientPetKind::Bongo(_) => Some(BONGO_CAT_HEIGHT),
+        }
+    }
+
+    pub(crate) fn is_bongo(&self) -> bool {
+        matches!(&self.kind, AmbientPetKind::Bongo(_))
+    }
+
+    #[cfg(test)]
+    pub(crate) fn set_image_support_for_tests(&mut self, support: PetImageSupport) {
+        if let AmbientPetKind::Sprite(pet) = &mut self.kind {
+            pet.set_image_support_for_tests(support);
+        }
+    }
+
+    pub(crate) fn set_activity_at(&mut self, activity: AmbientPetActivity, now: Instant) {
+        if let AmbientPetKind::Bongo(pet) = &mut self.kind {
+            pet.set_activity_at(activity, now);
+        }
+    }
+
+    pub(crate) fn schedule_next_frame_at(&self, now: Instant) {
+        match &self.kind {
+            AmbientPetKind::Sprite(pet) => pet.schedule_next_frame(),
+            AmbientPetKind::Bongo(pet) => pet.schedule_next_frame_at(now),
+        }
+    }
+
+    pub(crate) fn draw_request(
+        &self,
+        area: Rect,
+        composer_bottom_y: u16,
+    ) -> Option<AmbientPetDraw> {
+        match &self.kind {
+            AmbientPetKind::Sprite(pet) => pet.draw_request(area, composer_bottom_y),
+            AmbientPetKind::Bongo(_) => None,
+        }
+    }
+
+    pub(crate) fn preview_draw_request(&self, area: Rect) -> Option<AmbientPetDraw> {
+        match &self.kind {
+            AmbientPetKind::Sprite(pet) => pet.preview_draw_request(area),
+            AmbientPetKind::Bongo(_) => None,
+        }
+    }
+
+    pub(crate) fn render_text(&self, area: Rect, anchor_bottom_y: u16, buf: &mut Buffer) -> bool {
+        match &self.kind {
+            AmbientPetKind::Sprite(_) => false,
+            AmbientPetKind::Bongo(pet) => pet.render(area, anchor_bottom_y, buf),
+        }
+    }
+
+    #[cfg(test)]
+    fn current_frame_path(&self) -> Option<PathBuf> {
+        match &self.kind {
+            AmbientPetKind::Sprite(pet) => pet.current_frame_path(),
+            AmbientPetKind::Bongo(_) => None,
+        }
+    }
+
+    #[cfg(test)]
+    fn next_frame_delay(&self) -> Option<Duration> {
+        match &self.kind {
+            AmbientPetKind::Sprite(pet) => pet.next_frame_delay(),
+            AmbientPetKind::Bongo(_) => None,
+        }
+    }
+}
+
+impl SpritePet {
     /// Load the active ambient pet and prepare its frame cache.
     ///
     /// This resolves the selected pet id, extracts per-frame PNGs into the
@@ -143,7 +282,7 @@ impl AmbientPet {
     /// for later draw requests. A caller that repeatedly recreates `AmbientPet`
     /// instead of mutating one instance would lose animation timing continuity
     /// and pay the frame-cache preparation cost more often than necessary.
-    pub(crate) fn load(
+    fn load(
         selected_pet: Option<&str>,
         codex_home: &std::path::Path,
         frame_requester: FrameRequester,
@@ -448,27 +587,29 @@ pub(crate) fn test_ambient_pet(
     animations_enabled: bool,
 ) -> AmbientPet {
     AmbientPet {
-        pet: Pet {
-            id: "test".to_string(),
-            display_name: "Test".to_string(),
-            description: String::new(),
-            spritesheet_path: PathBuf::from("spritesheet.webp"),
-            frame_width: 192,
-            frame_height: 208,
-            columns: 8,
-            rows: 9,
-            frame_count: 72,
-            animations: HashMap::from([("idle".to_string(), test_animation())]),
-        },
-        support: PetImageSupport::Supported(ImageProtocol::Kitty),
-        frames: vec![PathBuf::from("frame-0.png"), PathBuf::from("frame-1.png")],
-        sixel_dir: PathBuf::new(),
-        frame_requester,
-        notification: None,
-        animation_started_at: Instant::now()
-            .checked_sub(Duration::from_millis(/*millis*/ 15))
-            .unwrap(),
-        animations_enabled,
+        kind: AmbientPetKind::Sprite(Box::new(SpritePet {
+            pet: Pet {
+                id: "test".to_string(),
+                display_name: "Test".to_string(),
+                description: String::new(),
+                spritesheet_path: PathBuf::from("spritesheet.webp"),
+                frame_width: 192,
+                frame_height: 208,
+                columns: 8,
+                rows: 9,
+                frame_count: 72,
+                animations: HashMap::from([("idle".to_string(), test_animation())]),
+            },
+            support: PetImageSupport::Supported(ImageProtocol::Kitty),
+            frames: vec![PathBuf::from("frame-0.png"), PathBuf::from("frame-1.png")],
+            sixel_dir: PathBuf::new(),
+            frame_requester,
+            notification: None,
+            animation_started_at: Instant::now()
+                .checked_sub(Duration::from_millis(/*millis*/ 15))
+                .unwrap(),
+            animations_enabled,
+        })),
     }
 }
 

@@ -17,6 +17,7 @@ use std::io::Write;
 
 mod ambient;
 mod asset_pack;
+mod bongo;
 mod catalog;
 mod frames;
 mod image_protocol;
@@ -33,6 +34,7 @@ use codex_utils_absolute_path::AbsolutePathBuf;
 use crate::tui::FrameRequester;
 
 pub(crate) use ambient::AmbientPet;
+pub(crate) use ambient::AmbientPetActivity;
 pub(crate) use ambient::AmbientPetDraw;
 pub(crate) use ambient::PetNotificationKind;
 #[cfg(test)]
@@ -52,6 +54,7 @@ pub(crate) use picker::build_pet_picker_params;
 pub(crate) use preview::PetPickerPreviewState;
 
 pub(crate) const DEFAULT_PET_ID: &str = "codex";
+pub(crate) const BONGO_CAT_PET_ID: &str = "bongo-cat";
 pub(crate) const DISABLED_PET_ID: &str = "disabled";
 
 /// Ensure that a selected built-in pet has a locally cached spritesheet.

@@ -17,6 +17,7 @@ use crate::bottom_pane::SelectionViewParams;
 use crate::bottom_pane::SideContentWidth;
 use crate::bottom_pane::popup_consts::standard_popup_hint_line;
 
+use super::BONGO_CAT_PET_ID;
 use super::DEFAULT_PET_ID;
 use super::DISABLED_PET_ID;
 use super::catalog;
@@ -146,6 +147,12 @@ fn available_pet_entries(codex_home: &Path) -> Vec<PetPickerEntry> {
         })
         .collect::<Vec<_>>();
     entries.push(PetPickerEntry {
+        selector: BONGO_CAT_PET_ID.to_string(),
+        legacy_selector: None,
+        display_name: "Bongo Cat".to_string(),
+        description: Some("A terminal cat that types along with you".to_string()),
+    });
+    entries.push(PetPickerEntry {
         selector: DISABLED_PET_ID.to_string(),
         legacy_selector: None,
         display_name: "Disable terminal pets".to_string(),
@@ -252,6 +259,7 @@ mod tests {
             vec![
                 "Disable terminal pets",
                 "BSOD",
+                "Bongo Cat",
                 "Chefito",
                 "Codex",
                 "Dewey",
@@ -262,9 +270,9 @@ mod tests {
                 "Stacky",
             ],
         );
-        assert_eq!(params.initial_selected_idx, Some(2));
+        assert_eq!(params.initial_selected_idx, Some(3));
         assert_eq!(
-            params.items[2].search_value.as_deref(),
+            params.items[3].search_value.as_deref(),
             Some("custom:chefito")
         );
     }
@@ -278,9 +286,9 @@ mod tests {
             PetPickerPreviewState::default(),
         );
 
-        assert_eq!(params.initial_selected_idx, Some(2));
-        assert_eq!(params.items[2].name, "Codex");
-        assert!(!params.items[2].is_current);
+        assert_eq!(params.initial_selected_idx, Some(3));
+        assert_eq!(params.items[3].name, "Codex");
+        assert!(!params.items[3].is_current);
     }
 
     #[test]

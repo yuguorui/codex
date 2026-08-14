@@ -2412,6 +2412,32 @@ async fn ambient_pet_can_be_disabled() {
 }
 
 #[tokio::test]
+async fn bongo_cat_renders_beside_the_composer_without_image_support() {
+    use ratatui::Terminal;
+
+    let (mut chat, _rx, _op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
+    chat.config.animations = false;
+    chat.set_tui_pet(Some(crate::pets::BONGO_CAT_PET_ID.to_string()));
+    chat.bottom_pane
+        .set_composer_text("Ship it to the beat".to_string(), Vec::new(), Vec::new());
+
+    assert!(!chat.ambient_pet_image_enabled());
+    assert_eq!(chat.history_wrap_width(/*width*/ 40), 29);
+
+    let width = 40;
+    let height = chat.desired_height(width);
+    let mut terminal = Terminal::new(TestBackend::new(width, height)).expect("create terminal");
+    terminal
+        .draw(|frame| chat.render(frame.area(), frame.buffer_mut()))
+        .expect("draw Bongo Cat");
+
+    assert_chatwidget_snapshot!(
+        "bongo_cat_beside_composer",
+        normalized_backend_snapshot(terminal.backend())
+    );
+}
+
+#[tokio::test]
 async fn added_history_uses_pet_adjusted_terminal_width() {
     #[derive(Debug)]
     struct WidthCell(std::sync::Arc<std::sync::atomic::AtomicU16>);
@@ -2475,6 +2501,17 @@ async fn ambient_pet_reserves_history_wrap_width() {
     assert_eq!(chat.history_wrap_width(/*width*/ 80), 69);
 
     chat.set_tui_pet(Some(crate::pets::DISABLED_PET_ID.to_string()));
+
+    assert_eq!(chat.history_wrap_width(/*width*/ 80), 80);
+}
+
+#[tokio::test]
+async fn unsupported_image_pet_does_not_reserve_history_wrap_width() {
+    let (mut chat, _rx, _op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
+    chat.install_test_ambient_pet_for_tests(/*animations_enabled*/ false);
+    chat.set_pet_image_support_for_tests(crate::pets::PetImageSupport::Unsupported(
+        crate::pets::PetImageUnsupportedReason::Terminal,
+    ));
 
     assert_eq!(chat.history_wrap_width(/*width*/ 80), 80);
 }

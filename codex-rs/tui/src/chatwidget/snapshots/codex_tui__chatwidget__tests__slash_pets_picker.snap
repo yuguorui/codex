@@ -9,9 +9,11 @@ expression: popup
   Disable terminal pets
   BSOD                   A tiny blue-screen
                          gremlin
-› Codex                  The original Codex
+  Bongo Cat              A terminal cat that
+                         types along with you
+› Codex                  The original Codex           Loading preview...
                          companion
-  Dewey                  A tidy duck for calm         Loading preview...
+  Dewey                  A tidy duck for calm
                          workspace days
   Fireball               Hot path energy for
                          fast iteration
@@ -19,7 +21,5 @@ expression: popup
                          void
   Rocky                  A steady rock when
                          the diff gets large
-  Seedy                  Small green shoots
-                         for new ideas
 
   Press enter to confirm or esc to go back

@@ -487,6 +487,9 @@ impl ChatWidget {
             SlashCommand::Theme => {
                 self.open_theme_picker();
             }
+            SlashCommand::Pet => {
+                self.select_pet_by_id(crate::pets::BONGO_CAT_PET_ID.to_string());
+            }
             SlashCommand::Pets => {
                 self.open_pets_picker();
             }
@@ -928,13 +931,16 @@ impl ChatWidget {
                 self.app_event_tx
                     .send(AppEvent::BeginWindowsSandboxGrantReadRoot { path: args });
             }
-            SlashCommand::Pets
+            SlashCommand::Pet | SlashCommand::Pets
                 if matches!(
                     args.trim().to_ascii_lowercase().as_str(),
                     "disable" | "disabled" | "hide" | "hidden" | "off" | "none"
                 ) =>
             {
                 self.app_event_tx.send(AppEvent::PetDisabled);
+            }
+            SlashCommand::Pet if !trimmed.is_empty() => {
+                self.add_error_message("Usage: /pet [off]".to_string());
             }
             SlashCommand::Pets if !trimmed.is_empty() => {
                 self.select_pet_by_id(args);
@@ -1146,6 +1152,7 @@ impl ChatWidget {
             | SlashCommand::Title
             | SlashCommand::Statusline
             | SlashCommand::Theme
+            | SlashCommand::Pet
             | SlashCommand::Pets => QueueDrain::Stop,
         }
     }

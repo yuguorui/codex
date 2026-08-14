@@ -2439,6 +2439,22 @@ async fn slash_resume_with_arg_requests_named_session_while_mcp_startup_is_runni
 
 #[tokio::test]
 #[serial]
+async fn slash_pet_activates_bongo_cat_on_an_unsupported_terminal() {
+    let (mut chat, mut rx, mut op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
+    force_tmux_pet_image_unsupported(&mut chat);
+
+    chat.dispatch_command(SlashCommand::Pet);
+
+    assert_matches!(
+        rx.try_recv(),
+        Ok(AppEvent::PetSelected { pet_id }) if pet_id == crate::pets::BONGO_CAT_PET_ID
+    );
+    assert_matches!(rx.try_recv(), Err(TryRecvError::Empty));
+    assert_matches!(op_rx.try_recv(), Err(TryRecvError::Empty));
+}
+
+#[tokio::test]
+#[serial]
 async fn slash_pets_opens_picker() {
     let (mut chat, mut rx, _op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
     force_pet_image_support(&mut chat);
