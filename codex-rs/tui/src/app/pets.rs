@@ -153,9 +153,14 @@ impl App {
                     .await
                 {
                     Ok(()) => {
+                        let should_clear_image =
+                            ambient_pet.as_ref().is_none_or(|pet| !pet.image_enabled());
                         self.config.tui_pet = Some(pet_id.clone());
                         self.chat_widget
                             .set_tui_pet_loaded(Some(pet_id), ambient_pet);
+                        if should_clear_image {
+                            tui.clear_ambient_pet_image()?;
+                        }
                     }
                     Err(err) => {
                         self.chat_widget

@@ -83,11 +83,58 @@ impl ChatWidget {
                     /*top*/ 1, /*left*/ 0, /*bottom*/ 0, /*right*/ 0,
                 )),
         );
-        RenderableItem::Owned(Box::new(flex))
+        let content = RenderableItem::Owned(Box::new(flex));
+        match self
+            .ambient_pet
+            .as_ref()
+            .filter(|pet| pet.text_height().is_some())
+        {
+            Some(pet) => RenderableItem::Owned(Box::new(TextPetRenderable {
+                child: content,
+                pet,
+                visible: self.bottom_pane.no_modal_or_popup_active(),
+            })),
+            None => content,
+        }
     }
 
     pub(crate) fn note_rendered_width(&self, width: u16) {
         self.last_rendered_width.set(Some(width));
+    }
+}
+
+struct TextPetRenderable<'a> {
+    child: RenderableItem<'a>,
+    pet: &'a crate::pets::AmbientPet,
+    visible: bool,
+}
+
+impl Renderable for TextPetRenderable<'_> {
+    fn render(&self, area: Rect, buf: &mut Buffer) {
+        self.child.render(area, buf);
+        if self.visible {
+            self.pet.render_text(area, area.bottom(), buf);
+        }
+    }
+
+    fn desired_height(&self, width: u16) -> u16 {
+        let child_height = self.child.desired_height(width);
+        let Some(pet_columns) = self.pet.layout_columns() else {
+            return child_height;
+        };
+        if !self.visible || width < pet_columns {
+            return child_height;
+        }
+        let pet_height = self.pet.text_height().unwrap_or(0).saturating_add(1);
+        child_height.max(pet_height)
+    }
+
+    fn cursor_pos(&self, area: Rect) -> Option<(u16, u16)> {
+        self.child.cursor_pos(area)
+    }
+
+    fn cursor_style(&self, area: Rect) -> crossterm::cursor::SetCursorStyle {
+        self.child.cursor_style(area)
     }
 }
 

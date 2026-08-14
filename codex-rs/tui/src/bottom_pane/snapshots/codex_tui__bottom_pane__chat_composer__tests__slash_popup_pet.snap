@@ -5,5 +5,5 @@ expression: terminal.backend()
 "                                                            "
 "› /pet                                                      "
 "                                                            "
-"                                                            "
+"  /pet   wake the Bongo Cat                                 "
 "  /pets  choose or hide the terminal pet                    "

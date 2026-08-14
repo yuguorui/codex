@@ -171,7 +171,7 @@ pub(crate) use selection_tabs::SelectionTab;
 /// Keeping a single value ensures Ctrl+C and Ctrl+D behave identically.
 pub(crate) const QUIT_SHORTCUT_TIMEOUT: Duration = Duration::from_secs(1);
 
-const APPROVAL_PROMPT_TYPING_IDLE_DELAY: Duration = Duration::from_secs(1);
+const COMPOSER_TYPING_IDLE_DELAY: Duration = Duration::from_secs(1);
 
 /// Whether Ctrl+C/Ctrl+D require a second press to quit.
 ///
@@ -575,13 +575,17 @@ impl BottomPane {
         }
     }
 
-    fn approval_prompt_delay_remaining(&self, now: Instant) -> Option<Duration> {
+    pub(crate) fn composer_typing_idle_in(&self, now: Instant) -> Option<Duration> {
         self.last_composer_activity_at.and_then(|last_activity_at| {
             last_activity_at
-                .checked_add(APPROVAL_PROMPT_TYPING_IDLE_DELAY)
+                .checked_add(COMPOSER_TYPING_IDLE_DELAY)
                 .and_then(|show_at| show_at.checked_duration_since(now))
                 .filter(|delay| !delay.is_zero())
         })
+    }
+
+    fn approval_prompt_delay_remaining(&self, now: Instant) -> Option<Duration> {
+        self.composer_typing_idle_in(now)
     }
 
     fn record_composer_activity_at(&mut self, now: Instant) {
@@ -2142,6 +2146,35 @@ mod tests {
     }
 
     #[test]
+    fn composer_keypress_starts_typing_activity_until_the_idle_deadline() {
+        let (tx_raw, _rx) = unbounded_channel::<AppEvent>();
+        let tx = AppEventSender::new(tx_raw);
+        let mut pane = test_pane(tx);
+        let now = Instant::now();
+
+        pane.record_composer_activity_at(now);
+
+        assert_eq!(
+            [
+                pane.composer_typing_idle_in(now),
+                pane.composer_typing_idle_in(
+                    now + COMPOSER_TYPING_IDLE_DELAY - Duration::from_millis(/*millis*/ 1),
+                ),
+                pane.composer_typing_idle_in(now + COMPOSER_TYPING_IDLE_DELAY),
+            ],
+            [
+                Some(COMPOSER_TYPING_IDLE_DELAY),
+                Some(Duration::from_millis(/*millis*/ 1)),
+                None,
+            ]
+        );
+
+        pane.last_composer_activity_at = None;
+        pane.handle_key_event(KeyEvent::new(KeyCode::Char('a'), KeyModifiers::NONE));
+        assert!(pane.last_composer_activity_at.is_some());
+    }
+
+    #[test]
     fn approval_request_is_delayed_after_recent_typing() {
         let (tx_raw, _rx) = unbounded_channel::<AppEvent>();
         let tx = AppEventSender::new(tx_raw);
@@ -2156,12 +2189,12 @@ mod tests {
         assert_eq!(pane.delayed_approval_requests.len(), 1);
 
         pane.pre_draw_tick_at(
-            now + APPROVAL_PROMPT_TYPING_IDLE_DELAY - Duration::from_millis(/*millis*/ 1),
+            now + COMPOSER_TYPING_IDLE_DELAY - Duration::from_millis(/*millis*/ 1),
         );
         assert!(pane.view_stack.is_empty());
         assert_eq!(pane.delayed_approval_requests.len(), 1);
 
-        pane.pre_draw_tick_at(now + APPROVAL_PROMPT_TYPING_IDLE_DELAY);
+        pane.pre_draw_tick_at(now + COMPOSER_TYPING_IDLE_DELAY);
         assert_eq!(pane.view_stack.len(), 1);
         assert!(pane.delayed_approval_requests.is_empty());
     }
@@ -2179,11 +2212,11 @@ mod tests {
         let continued_activity = first_activity + Duration::from_millis(/*millis*/ 750);
         pane.record_composer_activity_at(continued_activity);
 
-        pane.pre_draw_tick_at(first_activity + APPROVAL_PROMPT_TYPING_IDLE_DELAY);
+        pane.pre_draw_tick_at(first_activity + COMPOSER_TYPING_IDLE_DELAY);
         assert!(pane.view_stack.is_empty());
         assert_eq!(pane.delayed_approval_requests.len(), 1);
 
-        pane.pre_draw_tick_at(continued_activity + APPROVAL_PROMPT_TYPING_IDLE_DELAY);
+        pane.pre_draw_tick_at(continued_activity + COMPOSER_TYPING_IDLE_DELAY);
         assert_eq!(pane.view_stack.len(), 1);
         assert!(pane.delayed_approval_requests.is_empty());
     }
@@ -2221,7 +2254,7 @@ mod tests {
         pane.last_composer_activity_at = Some(now);
         pane.push_approval_request(exec_request(), &features);
 
-        pane.pre_draw_tick_at(now + APPROVAL_PROMPT_TYPING_IDLE_DELAY);
+        pane.pre_draw_tick_at(now + COMPOSER_TYPING_IDLE_DELAY);
         pane.handle_key_event(KeyEvent::new(KeyCode::Char('y'), KeyModifiers::NONE));
 
         let mut approval_decision = None;
@@ -2257,7 +2290,7 @@ mod tests {
         );
         assert!(pane.delayed_approval_requests.is_empty());
 
-        pane.pre_draw_tick_at(now + APPROVAL_PROMPT_TYPING_IDLE_DELAY);
+        pane.pre_draw_tick_at(now + COMPOSER_TYPING_IDLE_DELAY);
         assert!(pane.view_stack.is_empty());
     }
 

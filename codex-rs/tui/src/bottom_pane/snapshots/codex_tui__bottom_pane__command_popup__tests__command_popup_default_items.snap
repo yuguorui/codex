@@ -34,6 +34,7 @@ expression: commands
 /title - configure which items appear in the terminal title
 /statusline - configure which items appear in the status line
 /theme - choose a syntax highlighting theme
+/pet - wake the Bongo Cat
 /pets - choose or hide the terminal pet
 /mcp - list configured MCP tools; use /mcp verbose for details
 /logout - log out of Codex

@@ -1,0 +1,10 @@
+---
+source: tui/src/pets/bongo_tests.rs
+expression: terminal.backend()
+---
+"♪ /\_/\  "
+" ( o.o ) "
+" /|   |\ "
+"╭╯|___|╰╮"
+"╭●╮   ╭─╮"
+"╰─╯   ╰─╯"

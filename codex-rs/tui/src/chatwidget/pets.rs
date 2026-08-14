@@ -102,11 +102,8 @@ impl ChatWidget {
     pub(super) fn ambient_pet_wrap_reserved_cols(&self) -> u16 {
         self.ambient_pet
             .as_ref()
-            .filter(|pet| pet.image_enabled())
-            .map(|pet| {
-                pet.image_columns()
-                    .saturating_add(AMBIENT_PET_WRAP_GAP_COLUMNS)
-            })
+            .and_then(crate::pets::AmbientPet::layout_columns)
+            .map(|columns| columns.saturating_add(AMBIENT_PET_WRAP_GAP_COLUMNS))
             .unwrap_or(0)
     }
 
@@ -161,7 +158,7 @@ impl ChatWidget {
     }
 
     pub(crate) fn select_pet_by_id(&mut self, pet_id: String) {
-        if self.warn_if_pets_unsupported() {
+        if pet_id != crate::pets::BONGO_CAT_PET_ID && self.warn_if_pets_unsupported() {
             return;
         }
 
@@ -270,7 +267,11 @@ impl ChatWidget {
 
         match result {
             Ok(pet) => {
-                self.pet_picker_preview_state.set_ready();
+                if pet.is_bongo() {
+                    self.pet_picker_preview_state.set_bongo();
+                } else {
+                    self.pet_picker_preview_state.set_ready();
+                }
                 self.pet_picker_preview_pet = Some(pet);
                 #[cfg(test)]
                 if let Some(support) = self.pet_image_support_override
