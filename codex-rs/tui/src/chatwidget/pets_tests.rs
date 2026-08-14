@@ -37,6 +37,7 @@ async fn shared_pet_load_uses_cached_builtin_assets() {
         AbsolutePathBuf::from_absolute_path(codex_home.path()).expect("absolute temporary path"),
         chat.frame_requester.clone(),
         /*animations_enabled*/ false,
+        crate::pets::PetImageSupport::Supported(crate::pets::ImageProtocol::Kitty),
         &chat.pet_http_client,
     )
     .await
