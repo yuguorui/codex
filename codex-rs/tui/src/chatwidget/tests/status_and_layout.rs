@@ -2480,6 +2480,17 @@ async fn ambient_pet_reserves_history_wrap_width() {
 }
 
 #[tokio::test]
+async fn unsupported_image_pet_does_not_reserve_history_wrap_width() {
+    let (mut chat, _rx, _op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
+    chat.install_test_ambient_pet_for_tests(/*animations_enabled*/ false);
+    chat.set_pet_image_support_for_tests(crate::pets::PetImageSupport::Unsupported(
+        crate::pets::PetImageUnsupportedReason::Terminal,
+    ));
+
+    assert_eq!(chat.history_wrap_width(/*width*/ 80), 80);
+}
+
+#[tokio::test]
 #[serial]
 async fn ambient_pet_reduces_stream_width_and_composer_text_width() {
     use ratatui::Terminal;
