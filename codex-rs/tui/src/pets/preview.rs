@@ -54,6 +54,12 @@ impl PetPickerPreviewState {
         });
     }
 
+    pub(crate) fn set_ascii_bongo(&self) {
+        self.update(|inner| {
+            inner.status = PetPickerPreviewStatus::BongoAscii;
+        });
+    }
+
     pub(crate) fn set_error(&self, message: String) {
         self.update(|inner| {
             inner.status = PetPickerPreviewStatus::Error { message };
@@ -91,6 +97,7 @@ enum PetPickerPreviewStatus {
     Loading,
     Disabled,
     Ready,
+    BongoAscii,
     Error {
         message: String,
     },
@@ -115,6 +122,10 @@ impl Renderable for PetPickerPreviewRenderable {
                     Some("No pet will be shown.".to_string()),
                 ),
                 PetPickerPreviewStatus::Ready => return,
+                PetPickerPreviewStatus::BongoAscii => {
+                    super::bongo::BongoCat::render_preview(area, buf);
+                    return;
+                }
                 PetPickerPreviewStatus::Error { message } => {
                     ("Preview unavailable", Some(message.clone()))
                 }
@@ -133,7 +144,7 @@ impl Renderable for PetPickerPreviewRenderable {
     }
 
     fn desired_height(&self, _width: u16) -> u16 {
-        4
+        super::bongo::BONGO_CAT_HEIGHT.max(/*other*/ 4)
     }
 }
 

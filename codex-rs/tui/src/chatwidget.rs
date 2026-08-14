@@ -1201,6 +1201,7 @@ impl ChatWidget {
     }
 
     pub(crate) fn pre_draw_tick(&mut self) {
+        let now = Instant::now();
         self.update_due_hook_visibility();
         self.schedule_hook_timer_if_needed();
         if self.bottom_pane.has_active_view() {
@@ -1208,8 +1209,15 @@ impl ChatWidget {
         }
         self.schedule_workflow_frame_if_needed();
         self.bottom_pane.pre_draw_tick();
-        if let Some(pet) = self.ambient_pet.as_ref() {
-            pet.schedule_next_frame();
+        if let Some(pet) = self.ambient_pet.as_mut() {
+            let activity = self
+                .bottom_pane
+                .pet_typing_idle_in(now)
+                .map_or(crate::pets::AmbientPetActivity::Idle, |idle_in| {
+                    crate::pets::AmbientPetActivity::Typing { idle_in }
+                });
+            pet.set_activity_at(activity, now);
+            pet.schedule_next_frame_at(now);
         }
         self.refresh_goal_status_indicator_for_time_tick();
         if self.terminal_title_shows_action_required() != self.last_terminal_title_requires_action {
