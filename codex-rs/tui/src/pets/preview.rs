@@ -54,6 +54,12 @@ impl PetPickerPreviewState {
         });
     }
 
+    pub(crate) fn set_ascii_bongo(&self) {
+        self.update(|inner| {
+            inner.status = PetPickerPreviewStatus::BongoAscii;
+        });
+    }
+
     pub(crate) fn set_error(&self, message: String) {
         self.update(|inner| {
             inner.status = PetPickerPreviewStatus::Error { message };
@@ -91,6 +97,7 @@ enum PetPickerPreviewStatus {
     Loading,
     Disabled,
     Ready,
+    BongoAscii,
     Error {
         message: String,
     },
@@ -115,6 +122,10 @@ impl Renderable for PetPickerPreviewRenderable {
                     Some("No pet will be shown.".to_string()),
                 ),
                 PetPickerPreviewStatus::Ready => return,
+                PetPickerPreviewStatus::BongoAscii => {
+                    super::bongo::BongoCat::render_preview(area, buf);
+                    return;
+                }
                 PetPickerPreviewStatus::Error { message } => {
                     ("Preview unavailable", Some(message.clone()))
                 }
@@ -133,7 +144,7 @@ impl Renderable for PetPickerPreviewRenderable {
     }
 
     fn desired_height(&self, _width: u16) -> u16 {
-        4
+        super::bongo::BONGO_CAT_HEIGHT.max(/*other*/ 4)
     }
 }
 
@@ -146,6 +157,8 @@ fn centered_text_area(area: Rect, height: u16) -> Rect {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use ratatui::Terminal;
+    use ratatui::backend::TestBackend;
 
     #[test]
     fn centered_text_area_centers_vertically() {
@@ -160,5 +173,20 @@ mod tests {
                 /*x*/ 5, /*y*/ 13, /*width*/ 20, /*height*/ 2
             )
         );
+    }
+
+    #[test]
+    fn ascii_bongo_preview_snapshot() {
+        let state = PetPickerPreviewState::default();
+        state.set_ascii_bongo();
+        let preview = state.renderable();
+        let mut terminal =
+            Terminal::new(TestBackend::new(/*width*/ 30, /*height*/ 10)).expect("terminal");
+
+        terminal
+            .draw(|frame| preview.render(frame.area(), frame.buffer_mut()))
+            .expect("draw ASCII Bongo preview");
+
+        insta::assert_snapshot!(terminal.backend());
     }
 }

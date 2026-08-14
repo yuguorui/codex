@@ -37,6 +37,7 @@ async fn shared_pet_load_uses_cached_builtin_assets() {
         AbsolutePathBuf::from_absolute_path(codex_home.path()).expect("absolute temporary path"),
         chat.frame_requester.clone(),
         /*animations_enabled*/ false,
+        crate::pets::PetImageSupport::Supported(crate::pets::ImageProtocol::Kitty),
         &chat.pet_http_client,
     )
     .await
@@ -51,6 +52,57 @@ async fn shared_pet_load_uses_cached_builtin_assets() {
             .join(crate::pets::DEFAULT_PET_ID)
             .is_dir()
     );
+}
+
+#[tokio::test]
+async fn shared_pet_load_installs_bundled_bongo_assets() {
+    let (chat, _tx, _rx, _op_rx) =
+        crate::chatwidget::tests::make_chatwidget_manual_with_sender().await;
+    let codex_home = tempfile::tempdir().unwrap();
+
+    let pet = crate::pets::load_pet_with_assets(
+        crate::pets::BONGO_CAT_PET_ID.to_string(),
+        AbsolutePathBuf::from_absolute_path(codex_home.path()).expect("absolute temporary path"),
+        chat.frame_requester.clone(),
+        /*animations_enabled*/ true,
+        crate::pets::PetImageSupport::Supported(crate::pets::ImageProtocol::Kitty),
+        &chat.pet_http_client,
+    )
+    .await
+    .expect("load bundled Bongo Cat pet");
+
+    let spritesheet =
+        crate::pets::builtin_spritesheet_path(codex_home.path(), "bongo-cat-spritesheet-v3.png");
+    assert_eq!(
+        (
+            pet.is_ascii_bongo(),
+            pet.image_enabled(),
+            spritesheet.is_file(),
+            image::image_dimensions(&spritesheet).unwrap()
+        ),
+        (false, true, true, (4608, 371))
+    );
+}
+
+#[tokio::test]
+async fn shared_pet_load_uses_ascii_bongo_without_installing_assets() {
+    let (chat, _tx, _rx, _op_rx) =
+        crate::chatwidget::tests::make_chatwidget_manual_with_sender().await;
+    let codex_home = tempfile::tempdir().unwrap();
+
+    let pet = crate::pets::load_pet_with_assets(
+        crate::pets::BONGO_CAT_PET_ID.to_string(),
+        AbsolutePathBuf::from_absolute_path(codex_home.path()).expect("absolute temporary path"),
+        chat.frame_requester.clone(),
+        /*animations_enabled*/ true,
+        crate::pets::PetImageSupport::Unsupported(crate::pets::PetImageUnsupportedReason::Terminal),
+        &chat.pet_http_client,
+    )
+    .await
+    .expect("load ASCII Bongo Cat pet");
+
+    assert!(pet.is_ascii_bongo());
+    assert!(!codex_home.path().join("cache").exists());
 }
 
 #[tokio::test]

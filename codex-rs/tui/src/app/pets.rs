@@ -81,6 +81,7 @@ impl App {
         let codex_home = self.config.codex_home.clone();
         let frame_requester = tui.frame_requester();
         let animations_enabled = self.config.animations;
+        let support = self.chat_widget.pet_image_support();
         let tx = self.app_event_tx.clone();
         let pet_http_client = self.chat_widget.pet_http_client.clone();
         std::mem::drop(tokio::spawn(async move {
@@ -89,6 +90,7 @@ impl App {
                 codex_home,
                 frame_requester,
                 animations_enabled,
+                support,
                 &pet_http_client,
             )
             .await
@@ -153,9 +155,14 @@ impl App {
                     .await
                 {
                     Ok(()) => {
+                        let should_clear_image =
+                            ambient_pet.as_ref().is_none_or(|pet| !pet.image_enabled());
                         self.config.tui_pet = Some(pet_id.clone());
                         self.chat_widget
                             .set_tui_pet_loaded(Some(pet_id), ambient_pet);
+                        if should_clear_image {
+                            tui.clear_ambient_pet_image()?;
+                        }
                     }
                     Err(err) => {
                         self.chat_widget

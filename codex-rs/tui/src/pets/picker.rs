@@ -17,9 +17,11 @@ use crate::bottom_pane::SelectionViewParams;
 use crate::bottom_pane::SideContentWidth;
 use crate::bottom_pane::popup_consts::standard_popup_hint_line;
 
+use super::BONGO_CAT_PET_ID;
 use super::DEFAULT_PET_ID;
 use super::DISABLED_PET_ID;
 use super::catalog;
+use super::image_protocol::PetImageSupport;
 use super::model::CUSTOM_PET_PREFIX;
 use super::model::Pet;
 use super::model::custom_pet_selector;
@@ -47,16 +49,24 @@ pub(crate) fn build_pet_picker_params(
     current_pet: Option<&str>,
     codex_home: &Path,
     preview_state: PetPickerPreviewState,
+    support: PetImageSupport,
 ) -> SelectionViewParams {
-    let preferred_pet = current_pet.unwrap_or(DEFAULT_PET_ID);
-    let mut entries = available_pet_entries(codex_home);
-    entries.sort_by(|left, right| left.display_name.cmp(&right.display_name));
-    if let Some(disabled_idx) = entries
-        .iter()
-        .position(|entry| entry.selector == DISABLED_PET_ID)
-    {
-        let disabled_entry = entries.remove(disabled_idx);
-        entries.insert(0, disabled_entry);
+    let image_supported = support.protocol().is_some();
+    let preferred_pet = if !image_supported && current_pet != Some(DISABLED_PET_ID) {
+        BONGO_CAT_PET_ID
+    } else {
+        current_pet.unwrap_or(DEFAULT_PET_ID)
+    };
+    let mut entries = available_pet_entries(codex_home, support);
+    if image_supported {
+        entries.sort_by(|left, right| left.display_name.cmp(&right.display_name));
+        if let Some(disabled_idx) = entries
+            .iter()
+            .position(|entry| entry.selector == DISABLED_PET_ID)
+        {
+            let disabled_entry = entries.remove(disabled_idx);
+            entries.insert(0, disabled_entry);
+        }
     }
 
     let mut initial_selected_idx = None;
@@ -135,7 +145,24 @@ pub(crate) fn build_pet_picker_params(
     }
 }
 
-fn available_pet_entries(codex_home: &Path) -> Vec<PetPickerEntry> {
+fn available_pet_entries(codex_home: &Path, support: PetImageSupport) -> Vec<PetPickerEntry> {
+    if support.protocol().is_none() {
+        return vec![
+            PetPickerEntry {
+                selector: BONGO_CAT_PET_ID.to_string(),
+                legacy_selector: None,
+                display_name: "Bongo Cat (ASCII)".to_string(),
+                description: Some("A terminal cat that types along with you".to_string()),
+            },
+            PetPickerEntry {
+                selector: DISABLED_PET_ID.to_string(),
+                legacy_selector: None,
+                display_name: "Disable terminal pets".to_string(),
+                description: None,
+            },
+        ];
+    }
+
     let mut entries = catalog::BUILTIN_PETS
         .iter()
         .map(|pet| PetPickerEntry {
@@ -197,6 +224,16 @@ fn custom_pet_entries(codex_home: &Path) -> Vec<PetPickerEntry> {
 mod tests {
     use super::*;
 
+    fn supported_images() -> PetImageSupport {
+        PetImageSupport::Supported(super::super::image_protocol::ImageProtocol::Kitty)
+    }
+
+    fn unsupported_images() -> PetImageSupport {
+        PetImageSupport::Unsupported(
+            super::super::image_protocol::PetImageUnsupportedReason::Terminal,
+        )
+    }
+
     fn write_pet(dir: &Path, folder_name: &str, display_name: &str) {
         let pet_dir = dir.join("pets").join(folder_name);
         fs::create_dir_all(&pet_dir).unwrap();
@@ -241,6 +278,7 @@ mod tests {
             Some("chefito"),
             codex_home.path(),
             PetPickerPreviewState::default(),
+            supported_images(),
         );
 
         assert_eq!(
@@ -252,6 +290,7 @@ mod tests {
             vec![
                 "Disable terminal pets",
                 "BSOD",
+                "Bongo Cat",
                 "Chefito",
                 "Codex",
                 "Dewey",
@@ -262,9 +301,9 @@ mod tests {
                 "Stacky",
             ],
         );
-        assert_eq!(params.initial_selected_idx, Some(2));
+        assert_eq!(params.initial_selected_idx, Some(3));
         assert_eq!(
-            params.items[2].search_value.as_deref(),
+            params.items[3].search_value.as_deref(),
             Some("custom:chefito")
         );
     }
@@ -276,11 +315,12 @@ mod tests {
             /*current_pet*/ None,
             codex_home.path(),
             PetPickerPreviewState::default(),
+            supported_images(),
         );
 
-        assert_eq!(params.initial_selected_idx, Some(2));
-        assert_eq!(params.items[2].name, "Codex");
-        assert!(!params.items[2].is_current);
+        assert_eq!(params.initial_selected_idx, Some(3));
+        assert_eq!(params.items[3].name, "Codex");
+        assert!(!params.items[3].is_current);
     }
 
     #[test]
@@ -290,6 +330,7 @@ mod tests {
             Some(DISABLED_PET_ID),
             codex_home.path(),
             PetPickerPreviewState::default(),
+            supported_images(),
         );
 
         assert_eq!(params.initial_selected_idx, Some(0));
@@ -311,6 +352,7 @@ mod tests {
             Some("custom:legacy"),
             codex_home.path(),
             PetPickerPreviewState::default(),
+            supported_images(),
         );
         let legacy = params
             .items
@@ -320,5 +362,31 @@ mod tests {
 
         assert!(legacy.is_current);
         assert_eq!(legacy.search_value.as_deref(), Some("custom:legacy"));
+    }
+
+    #[test]
+    fn unsupported_picker_only_offers_ascii_bongo_and_disable() {
+        let codex_home = tempfile::tempdir().unwrap();
+        write_pet(codex_home.path(), "chefito", "Chefito");
+
+        let params = build_pet_picker_params(
+            Some(DEFAULT_PET_ID),
+            codex_home.path(),
+            PetPickerPreviewState::default(),
+            unsupported_images(),
+        );
+
+        assert_eq!(
+            params
+                .items
+                .iter()
+                .map(|item| (item.name.as_str(), item.is_current))
+                .collect::<Vec<_>>(),
+            vec![
+                ("Bongo Cat (ASCII)", false),
+                ("Disable terminal pets", false),
+            ]
+        );
+        assert_eq!(params.initial_selected_idx, Some(0));
     }
 }

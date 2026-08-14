@@ -1,0 +1,13 @@
+---
+source: tui/src/chatwidget/tests/slash_commands.rs
+expression: popup
+---
+  Select Pet                                               /\___/\
+  Choose a pet to wake in the terminal.                   (= o.o =)
+                                                         /|       |\
+  Type to filter pets...                                / |_______| \
+› Bongo Cat (ASCII)      A terminal cat that           ╭───●─────●───╮
+                         types along with you          │ · · · · · · │
+  Disable terminal pets                                ╰─────────────╯
+
+  Press enter to confirm or esc to go back
