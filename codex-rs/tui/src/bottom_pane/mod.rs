@@ -192,6 +192,7 @@ pub(crate) use selection_tabs::SelectionTab;
 pub(crate) const QUIT_SHORTCUT_TIMEOUT: Duration = Duration::from_secs(1);
 
 const APPROVAL_PROMPT_TYPING_IDLE_DELAY: Duration = Duration::from_secs(1);
+const PET_TYPING_IDLE_DELAY: Duration = Duration::from_millis(300);
 
 /// Whether Ctrl+C/Ctrl+D require a second press to quit.
 ///
@@ -670,13 +671,21 @@ impl BottomPane {
         }
     }
 
-    fn approval_prompt_delay_remaining(&self, now: Instant) -> Option<Duration> {
+    pub(crate) fn pet_typing_idle_in(&self, now: Instant) -> Option<Duration> {
+        self.composer_activity_idle_in(now, PET_TYPING_IDLE_DELAY)
+    }
+
+    fn composer_activity_idle_in(&self, now: Instant, idle_delay: Duration) -> Option<Duration> {
         self.last_composer_activity_at.and_then(|last_activity_at| {
             last_activity_at
-                .checked_add(APPROVAL_PROMPT_TYPING_IDLE_DELAY)
+                .checked_add(idle_delay)
                 .and_then(|show_at| show_at.checked_duration_since(now))
                 .filter(|delay| !delay.is_zero())
         })
+    }
+
+    fn approval_prompt_delay_remaining(&self, now: Instant) -> Option<Duration> {
+        self.composer_activity_idle_in(now, APPROVAL_PROMPT_TYPING_IDLE_DELAY)
     }
 
     fn record_composer_activity_at(&mut self, now: Instant) {
@@ -2540,6 +2549,35 @@ mod tests {
 
         assert_eq!(pane.view_stack.len(), 1);
         assert!(pane.delayed_approval_requests.is_empty());
+    }
+
+    #[test]
+    fn composer_keypress_starts_pet_typing_activity_for_300_milliseconds() {
+        let (tx_raw, _rx) = unbounded_channel::<AppEvent>();
+        let tx = AppEventSender::new(tx_raw);
+        let mut pane = test_pane(tx);
+        let now = Instant::now();
+
+        pane.record_composer_activity_at(now);
+
+        assert_eq!(
+            [
+                pane.pet_typing_idle_in(now),
+                pane.pet_typing_idle_in(
+                    now + PET_TYPING_IDLE_DELAY - Duration::from_millis(/*millis*/ 1),
+                ),
+                pane.pet_typing_idle_in(now + PET_TYPING_IDLE_DELAY),
+            ],
+            [
+                Some(PET_TYPING_IDLE_DELAY),
+                Some(Duration::from_millis(/*millis*/ 1)),
+                None,
+            ]
+        );
+
+        pane.last_composer_activity_at = None;
+        pane.handle_key_event(KeyEvent::new(KeyCode::Char('a'), KeyModifiers::NONE));
+        assert!(pane.last_composer_activity_at.is_some());
     }
 
     #[test]
