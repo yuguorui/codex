@@ -17,6 +17,7 @@ use std::io::Write;
 
 mod ambient;
 mod asset_pack;
+mod bongo;
 mod catalog;
 mod frames;
 mod image_protocol;
@@ -33,6 +34,7 @@ use codex_utils_absolute_path::AbsolutePathBuf;
 use crate::tui::FrameRequester;
 
 pub(crate) use ambient::AmbientPet;
+pub(crate) use ambient::AmbientPetActivity;
 pub(crate) use ambient::AmbientPetDraw;
 pub(crate) use ambient::PetNotificationKind;
 #[cfg(test)]
@@ -40,13 +42,14 @@ pub(crate) use ambient::test_ambient_pet;
 pub(crate) use asset_pack::builtin_spritesheet_path;
 #[cfg(test)]
 pub(crate) use asset_pack::write_test_pack;
+pub(crate) use catalog::BONGO_CAT_PET_ID;
 #[cfg(test)]
 pub(crate) use image_protocol::ImageProtocol;
 pub(crate) use image_protocol::PetImageSupport;
 #[cfg(test)]
 pub(crate) use image_protocol::PetImageUnsupportedReason;
 #[cfg(not(test))]
-pub(crate) use image_protocol::detect_pet_image_support;
+pub(crate) use image_protocol::ProtocolSelection;
 pub(crate) use picker::PET_PICKER_VIEW_ID;
 pub(crate) use picker::build_pet_picker_params;
 pub(crate) use preview::PetPickerPreviewState;
@@ -77,15 +80,20 @@ pub(crate) async fn load_pet_with_assets(
     codex_home: AbsolutePathBuf,
     frame_requester: FrameRequester,
     animations_enabled: bool,
+    support: PetImageSupport,
     http_client: &RouteAwareClientPool,
 ) -> Result<AmbientPet> {
-    ensure_builtin_pack_for_pet(&pet_id, &codex_home, http_client).await?;
+    let use_ascii_bongo = pet_id == BONGO_CAT_PET_ID && support.protocol().is_none();
+    if !use_ascii_bongo {
+        ensure_builtin_pack_for_pet(&pet_id, &codex_home, http_client).await?;
+    }
     tokio::task::spawn_blocking(move || {
         AmbientPet::load(
             Some(&pet_id),
             &codex_home,
             frame_requester,
             animations_enabled,
+            support,
         )
     })
     .await
