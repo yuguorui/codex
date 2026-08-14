@@ -1,9 +1,9 @@
 //! Built-in pet asset acquisition and cache ownership.
 //!
-//! Unlike custom pets, built-in pets are not checked into the TUI package as
-//! local spritesheets. The TUI resolves them from the public Codex pets CDN on
-//! first use, verifies that the downloaded file has the expected spritesheet
-//! geometry, and installs it into a versioned cache under CODEX_HOME.
+//! Most built-in pets are resolved from the public Codex pets CDN on first use,
+//! while pets with product-specific artwork may ship as bundled assets. Both
+//! paths validate the expected spritesheet geometry and install into the same
+//! versioned cache under CODEX_HOME.
 //!
 //! This module deliberately stops at "a validated spritesheet exists at this
 //! path". Higher layers remain responsible for deciding when downloads are
@@ -23,6 +23,7 @@ use url::Url;
 use uuid::Uuid;
 
 use super::catalog;
+use super::catalog::BuiltinPetAsset;
 
 const PET_PACK_VERSION: &str = "v1";
 const PET_PACK_DIR: &str = "cache/tui-pets";
@@ -36,12 +37,12 @@ pub(crate) fn builtin_spritesheet_path(codex_home: &Path, file: &str) -> PathBuf
 
 /// Ensure that a built-in pet's spritesheet is present and structurally valid.
 ///
-/// The cache key is the CDN-facing filename, so updating a built-in pet means
-/// publishing a new versioned filename rather than mutating an existing one in
-/// place. If a cached file is missing or invalid, this downloads a fresh copy,
-/// validates the decoded image dimensions, and installs it atomically. Callers
-/// should treat any error here as "the asset is unavailable", not as a partial
-/// install they can safely ignore.
+/// The cache key is the catalog filename, so updating a built-in pet means using
+/// a new versioned filename rather than mutating an existing one in place. If a
+/// cached file is missing or invalid, this acquires a fresh copy from the
+/// configured asset source, validates the decoded image dimensions, and
+/// installs it atomically. Callers should treat any error here as "the asset is
+/// unavailable", not as a partial install they can safely ignore.
 pub(crate) async fn ensure_builtin_pet(
     codex_home: &Path,
     pet: catalog::BuiltinPet,
@@ -50,7 +51,7 @@ pub(crate) async fn ensure_builtin_pet(
     let destination = builtin_spritesheet_path(codex_home, pet.spritesheet_file);
     let cache_destination = destination.clone();
     let cache_valid = tokio::task::spawn_blocking(move || {
-        validate_cached_spritesheet(&cache_destination).is_ok()
+        validate_cached_spritesheet(&cache_destination, pet).is_ok()
     })
     .await
     .context("join pet spritesheet cache validation task")?;
@@ -58,21 +59,31 @@ pub(crate) async fn ensure_builtin_pet(
         return Ok(());
     }
 
-    let url = builtin_pet_url(pet)?;
-    let bytes = download_bytes_with_limit(http_client, &url, PET_MAX_DOWNLOAD_BYTES).await?;
+    let bytes = match pet.asset {
+        BuiltinPetAsset::Cdn => {
+            let url = builtin_pet_url(pet)?;
+            download_bytes_with_limit(http_client, &url, PET_MAX_DOWNLOAD_BYTES).await?
+        }
+        BuiltinPetAsset::Bundled(bytes) => bytes.to_vec(),
+    };
     tokio::task::spawn_blocking(move || {
         let parent = destination
             .parent()
             .context("pet spritesheet path should include an assets directory")?;
         fs::create_dir_all(parent).with_context(|| format!("create {}", parent.display()))?;
 
+        let extension = destination
+            .extension()
+            .and_then(|extension| extension.to_str())
+            .context("pet spritesheet filename should include a UTF-8 extension")?;
         let staging = destination.with_file_name(format!(
-            ".{}.download-{}.webp",
+            ".{}.download-{}.{}",
             pet.spritesheet_file,
-            Uuid::new_v4()
+            Uuid::new_v4(),
+            extension,
         ));
         fs::write(&staging, &bytes).with_context(|| format!("write {}", staging.display()))?;
-        if let Err(err) = validate_cached_spritesheet(&staging) {
+        if let Err(err) = validate_cached_spritesheet(&staging, pet) {
             let _ = fs::remove_file(&staging);
             return Err(err);
         }
@@ -81,7 +92,7 @@ pub(crate) async fn ensure_builtin_pet(
             return Ok(());
         }
 
-        if validate_cached_spritesheet(&destination).is_ok() {
+        if validate_cached_spritesheet(&destination, pet).is_ok() {
             let _ = fs::remove_file(&staging);
             return Ok(());
         }
@@ -97,6 +108,9 @@ pub(crate) async fn ensure_builtin_pet(
 }
 
 fn builtin_pet_url(pet: catalog::BuiltinPet) -> Result<String> {
+    if !matches!(pet.asset, BuiltinPetAsset::Cdn) {
+        bail!("bundled pet {} does not have a CDN URL", pet.id);
+    }
     let url = format!("{PET_CDN_BASE_URL}/{}", pet.spritesheet_file);
     validate_download_url(&url)?;
     Ok(url)
@@ -162,15 +176,17 @@ fn validate_download_url(value: &str) -> Result<()> {
     Ok(())
 }
 
-fn validate_cached_spritesheet(path: &Path) -> Result<()> {
+fn validate_cached_spritesheet(path: &Path, pet: catalog::BuiltinPet) -> Result<()> {
     let (width, height) =
         image::image_dimensions(path).with_context(|| format!("read {}", path.display()))?;
-    if width != catalog::SPRITESHEET_WIDTH || height != catalog::SPRITESHEET_HEIGHT {
+    let expected_width = pet.spritesheet_width();
+    let expected_height = pet.spritesheet_height();
+    if width != expected_width || height != expected_height {
         bail!(
             "invalid pet spritesheet dimensions for {}: expected {}x{}, got {}x{}",
             path.display(),
-            catalog::SPRITESHEET_WIDTH,
-            catalog::SPRITESHEET_HEIGHT,
+            expected_width,
+            expected_height,
             width,
             height
         );
@@ -184,7 +200,7 @@ pub(crate) fn write_test_pack(codex_home: &Path) {
     fs::create_dir_all(&assets_dir).unwrap();
     for pet in catalog::BUILTIN_PETS {
         let path = assets_dir.join(pet.spritesheet_file);
-        catalog::write_test_spritesheet(&path);
+        catalog::write_test_builtin_spritesheet(&path, *pet);
     }
 }
 
@@ -230,7 +246,7 @@ mod tests {
         for pet in catalog::BUILTIN_PETS {
             let path = builtin_spritesheet_path(dir.path(), pet.spritesheet_file);
             assert!(path.is_file());
-            validate_cached_spritesheet(&path).unwrap();
+            validate_cached_spritesheet(&path, *pet).unwrap();
         }
     }
 }
