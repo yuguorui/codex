@@ -1,7 +1,7 @@
-<p align="center"><strong>Codex++</strong> is a fork of <a href="https://github.com/openai/codex">openai/codex</a> that adds third-party model provider support (Chat Completions, Anthropic, custom providers) alongside the original OpenAI Responses API.</p>
+<p align="center"><strong>Codex++</strong> is the Codex fork for bringing your own models, orchestrating serious multi-agent workflows, and, most importantly, coding with a Bongo Cat that types when you do. It rebases onto upstream every day, so the extras do not come at the cost of falling behind.</p>
 
 <p align="center">
-  <img src="https://github.com/openai/codex/blob/main/.github/codex-cli-splash.png" alt="Codex CLI splash" width="80%" />
+  <img src="./.github/codex-cli-splash.png" alt="Codex++ CLI with a Bongo Cat terminal pet" width="80%" />
 </p>
 
 <p align="center">Codex++ runs locally on your computer as the <code>codex++</code> command. It builds as a standalone executable with zero dependencies.</p>
@@ -12,13 +12,19 @@
 
 Codex++ extends the official [Codex CLI](https://github.com/openai/codex) with:
 
-- **Chat Completions API** (`wire_api = "chat"`) - connect to any OpenAI-compatible provider: Ollama, vLLM, LiteLLM, DeepSeek, Mistral, Groq, Together, DashScope, and more.
-- **Anthropic Messages API** (`wire_api = "anthropic"`) - use Claude models directly through Anthropic's native API.
-- **Multi-agent v2 opt-out** (`features.multi_agent_v2 = false`) - honor an explicit local disable even when the model catalog selects v2, so third-party providers are not forced onto its Responses API-specific namespaced and encrypted-schema tool protocol.
-- **Auth header scheme control** (`env_key_auth`) - choose between `Bearer` and `x-api-key` auth per provider.
-- **Provider-specific request fields** (`extra_body`) - merge arbitrary JSON into request bodies for provider-specific features like `enable_thinking` or `thinking_budget`.
-- **Non-GPT-friendly file tools** - offer hashline editing and Claude Code-compatible structured `Read` / `Edit` interfaces, giving models that struggle with Codex's freeform `apply_patch` grammar more reliable alternatives.
-- **Always retry** - automatic exponential backoff for any reasonable conditions.
+- **Bongo Cat, obviously** - our most powerful (and cutest) feature. Pick it from `/pets` and it will drum along while you type. Image-capable terminals get the full sprite animation; everyone else gets a terminal-native ASCII cat.
+- **A fork that keeps up** - automation rebases Codex++ onto the latest upstream Codex every day, validates the result, and publishes fresh binaries when upstream changes. You should not have to choose between fork features and current upstream features.
+- **Dynamic multi-agent workflows** - run deterministic JavaScript orchestration in the background with parallel agents, structured outputs, worktree isolation, retries, resumable runs, and live progress in `/workflows`.
+- **Universal provider support** - connect Codex++ to any provider through either native wire protocol:
+  - **Chat Completions API** (`wire_api = "chat"`) - works with OpenAI-compatible providers including Ollama, vLLM, LiteLLM, DeepSeek, Mistral, Groq, Together, DashScope, and more.
+  - **Anthropic Messages API** (`wire_api = "anthropic"`) - use Claude models directly through Anthropic's native API.
+  - **Auth header scheme control** (`env_key_auth`) - choose between `Bearer` and `x-api-key` auth per provider.
+  - **Provider-specific request fields** (`extra_body`) - merge arbitrary JSON into request bodies for provider-specific features like `enable_thinking` or `thinking_budget`.
+  - **Non-GPT-friendly file tools** - offer hashline editing and Claude Code-compatible structured `Read` / `Edit` interfaces, giving models that struggle with Codex's freeform `apply_patch` grammar more reliable alternatives.
+- **More control** - make Codex++ adapt to your setup, not the other way around:
+  - **Multi-agent v2 opt-out** (`features.multi_agent_v2 = false`) - honor an explicit local disable even when the model catalog selects v2, so third-party providers are not forced onto its Responses API-specific namespaced and encrypted-schema tool protocol.
+  - **Always retry** - automatically apply exponential backoff for any reasonable retry condition.
+- **Third-party memory compatibility** - use the active thread model for memory extraction and consolidation on non-OpenAI providers instead of sending provider-incompatible OpenAI model names.
 
 For a detailed technical breakdown, see [`codex-rs/README.md`](./codex-rs/README.md).
 
@@ -74,6 +80,23 @@ codex++ -m deepseek/deepseek-chat --reasoning-effort low
 codex++ -m anthropic/claude-sonnet-4-20250514 --reasoning-effort high
 ```
 
+## Typing-reactive Bongo Cat
+
+Yes, it types when you type. Run `/pets`, choose **Bongo Cat**, and your new pair-programming companion will settle in beside the composer. Kitty, iTerm2, and Sixel terminals get the full bundled sprite animation; everywhere else, Bongo Cat shows up as terminal-native ASCII art. Your choice is remembered in `config.toml`.
+
+## Dynamic workflows
+
+Workflows are enabled by default. Explicitly ask Codex to run a workflow when a task benefits from parallel research, independent verification, or more context than one agent can hold:
+
+```text
+Run the deep-research workflow on the current state of local-first AI coding tools.
+Run a high-effort code-review workflow on the current branch.
+```
+
+Codex++ includes `deep-research` and `code-review` workflows. It can also discover saved `.js` workflows from `~/.codex/workflows`, project-level `.codex/workflows` and `.claude/workflows` directories, and active plugins. Workflow scripts can compose `agent()`, `pipeline()`, and `parallel()` calls, validate structured results with JSON Schema, and isolate mutating agents in temporary Git worktrees.
+
+Runs continue in the background after launch. Open `/workflows` in the TUI to inspect phases and agents, stop a run, or skip and retry individual agents.
+
 ## Configuration
 
 Codex++ uses `config.toml` (same location as upstream: `~/.codex/config.toml`). Add provider blocks to configure third-party models:
@@ -115,11 +138,23 @@ multi_agent_v2 = false
 
 With `multi_agent` left enabled (the default), Codex continues using its regular multi-agent function tools. Set `multi_agent = false` as well to disable multi-agent entirely.
 
+### Third-party memory model selection
+
+For non-OpenAI providers, memory extraction and consolidation use the current thread model by default, including model changes made after the thread starts. Explicit phase overrides still take priority:
+
+```toml
+[memories]
+extract_model = "provider/model-for-extraction"
+consolidation_model = "provider/model-for-consolidation"
+```
+
 See [`codex-rs/README.md`](./codex-rs/README.md) for full configuration reference including `extra_body`, `extra_headers`, `env_key_auth`, `request_max_retry_delay_ms`, and reasoning effort mapping.
 
 ## Upstream Features
 
-All features from [openai/codex](https://github.com/openai/codex) are inherited unchanged. See the [upstream documentation](https://developers.openai.com/codex) for details on config, MCP, notifications, sandbox, exec, and more.
+Forks should add features, not freeze you in time. Every day at 02:00 Asia/Shanghai, an automated workflow checks [openai/codex](https://github.com/openai/codex) for new commits and rebases Codex++ onto the latest `upstream/main`. The rebased fork must pass formatting checks, a workspace-wide Cargo check, and a release build before it is pushed and a new release is triggered.
+
+That means you keep the latest upstream capabilities alongside the additions in Codex++. See the [upstream documentation](https://developers.openai.com/codex) for details on config, MCP, notifications, sandbox, exec, and more.
 
 ## Docs
 
