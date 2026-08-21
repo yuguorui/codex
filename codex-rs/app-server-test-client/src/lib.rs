@@ -345,7 +345,7 @@ pub async fn run() -> Result<()> {
     match command {
         CliCommand::Serve { listen, kill } => {
             ensure_dynamic_tools_unused(&dynamic_tools, "serve")?;
-            let codex_bin = codex_bin.unwrap_or_else(|| PathBuf::from("codex"));
+            let codex_bin = codex_bin.unwrap_or_else(|| PathBuf::from("codex++"));
             serve(&codex_bin, &config_overrides, &listen, kill)
         }
         CliCommand::SendMessage { user_message } => {
