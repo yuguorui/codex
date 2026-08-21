@@ -8,6 +8,8 @@ use std::time::Duration;
 
 use anyhow::Context;
 use anyhow::Result;
+#[cfg(windows)]
+use anyhow::bail;
 use codex_http_client::ClientRouteClass;
 use codex_http_client::HttpClientFactory;
 use codex_http_client::RouteAwareClientPool;
@@ -42,12 +44,12 @@ pub(crate) use manual_update::request as request_manual_update;
 
 const INITIAL_UPDATE_DELAY: Duration = Duration::from_secs(5 * 60);
 const RESTART_RETRY_INTERVAL: Duration = Duration::from_millis(50);
-#[cfg(unix)]
-const INSTALL_URL: &str = "https://chatgpt.com/codex/install.sh";
-#[cfg(windows)]
-const INSTALL_URL: &str = "https://chatgpt.com/codex/install.ps1";
+const INSTALL_URL: &str =
+    "https://github.com/yuguorui/codex/releases/latest/download/install-fork.sh";
 
 pub(crate) async fn run(http_client_factory: HttpClientFactory) -> Result<()> {
+    #[cfg(windows)]
+    bail!("pid-managed updater loop is unsupported on this platform");
     let http = RouteAwareClientPool::new_without_request_logging(
         http_client_factory,
         ClientRouteClass::Other,
