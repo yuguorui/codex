@@ -80,7 +80,7 @@ impl App {
                     (!workload_identity_selected).then(|| SelectionItem {
                         name: "Start background server".to_string(),
                         description: Some(
-                            "Open `codex agents` in another terminal afterward.".to_string(),
+                            "Open `codex++ agents` in another terminal afterward.".to_string(),
                         ),
                         actions: vec![Box::new(|tx| tx.send(AppEvent::StartAgentsDaemon))],
                         dismiss_on_select: true,
@@ -832,24 +832,7 @@ impl App {
             let result = async {
                 let current_executable =
                     std::env::current_exe().map_err(|error| error.to_string())?;
-                let executable = if current_executable
-                    .file_stem()
-                    .and_then(std::ffi::OsStr::to_str)
-                    .is_some_and(|name| {
-                        if cfg!(windows) {
-                            name.eq_ignore_ascii_case("codex-tui")
-                        } else {
-                            name == "codex-tui"
-                        }
-                    }) {
-                    current_executable.with_file_name(if cfg!(windows) {
-                        "codex.exe"
-                    } else {
-                        "codex"
-                    })
-                } else {
-                    current_executable
-                };
+                let executable = agents_daemon_executable(current_executable);
                 let output = tokio::process::Command::new(executable)
                     .args(["app-server", "daemon", "start"])
                     .output()
@@ -870,6 +853,28 @@ impl App {
 
             app_event_tx.send(AppEvent::AgentsDaemonStarted { result });
         });
+    }
+}
+
+#[cfg(any(unix, windows))]
+fn agents_daemon_executable(current_executable: PathBuf) -> PathBuf {
+    if current_executable
+        .file_stem()
+        .is_none_or(|name| name != "codex-tui")
+    {
+        return current_executable;
+    }
+
+    let codex_plus_name = if cfg!(windows) {
+        "codex++.exe"
+    } else {
+        "codex++"
+    };
+    let codex_plus = current_executable.with_file_name(codex_plus_name);
+    if codex_plus.is_file() {
+        codex_plus
+    } else {
+        current_executable.with_file_name("codex")
     }
 }
 
