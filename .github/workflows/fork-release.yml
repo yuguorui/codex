@@ -13,6 +13,9 @@ on:
         type: boolean
         default: false
 
+env:
+  CODEX_REPO_ROOT: ${{ github.workspace }}
+
 concurrency:
   group: ${{ github.workflow }}
   cancel-in-progress: false
