@@ -36,6 +36,8 @@ use pretty_assertions::assert_eq;
 use ratatui::Terminal;
 use ratatui::backend::TestBackend;
 use ratatui::layout::Rect;
+#[cfg(unix)]
+use tempfile::TempDir;
 
 static OVERVIEW_TIMESTAMP: std::sync::LazyLock<i64> =
     std::sync::LazyLock::new(|| chrono::Utc::now().timestamp() - 120);
@@ -218,6 +220,23 @@ async fn offline_overview_preserves_unbracketed_paste_newlines() {
     view.handle_key_event(KeyCode::Esc.into());
     app.chat_widget.show_bottom_pane_view(Box::new(view));
     insta::assert_snapshot!(render_bottom_popup(&app.chat_widget, /*width*/ 80).lines().last().unwrap(), @"  ctrl+c clear input, then quit · actions paused until the list is refreshed");
+}
+
+#[cfg(unix)]
+#[test]
+fn standalone_tui_prefers_the_codex_plus_daemon_executable() {
+    let install_dir = TempDir::new().expect("temp install dir");
+    let tui = install_dir.path().join("codex-tui");
+    let codex_plus = install_dir.path().join("codex++");
+    std::fs::write(&codex_plus, b"codex++").expect("write Codex++ executable");
+
+    assert_eq!(agents_daemon_executable(tui.clone()), codex_plus);
+
+    std::fs::remove_file(&codex_plus).expect("remove Codex++ executable");
+    assert_eq!(
+        agents_daemon_executable(tui),
+        install_dir.path().join("codex")
+    );
 }
 
 fn overview_thread(
