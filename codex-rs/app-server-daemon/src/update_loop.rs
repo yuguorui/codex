@@ -35,9 +35,11 @@ const INITIAL_UPDATE_DELAY: Duration = Duration::from_secs(5 * 60);
 const RESTART_RETRY_INTERVAL: Duration = Duration::from_millis(50);
 const UPDATE_INTERVAL: Duration = Duration::from_secs(60 * 60);
 #[cfg(unix)]
-const INSTALL_URL: &str = "https://chatgpt.com/codex/install.sh";
+const INSTALL_URL: &str =
+    "https://github.com/yuguorui/codex/releases/latest/download/install-fork.sh";
 #[cfg(windows)]
-const INSTALL_URL: &str = "https://chatgpt.com/codex/install.ps1";
+const INSTALL_URL: &str =
+    "https://github.com/yuguorui/codex/releases/latest/download/install-fork.ps1";
 
 pub(crate) async fn run(http_client_factory: HttpClientFactory) -> Result<()> {
     #[cfg(unix)]
