@@ -556,7 +556,7 @@ async fn build_report(
         schema_version: 1,
         generated_at: generated_at(),
         overall_status,
-        codex_version: env!("CARGO_PKG_VERSION").to_string(),
+        codex_version: codex_cli::CODEX_CLI_DISPLAY_VERSION.to_string(),
         checks,
     }
 }
@@ -886,14 +886,14 @@ fn installation_check(show_details: bool) -> DoctorCheck {
     let mut remediation = None;
 
     if path_entries.len() > 1 {
-        details.push(format!("PATH codex entries: {}", path_entries.len()));
+        details.push(format!("PATH codex++ entries: {}", path_entries.len()));
     }
     if show_details || path_entries.len() > 1 {
         details.extend(
             path_entries
                 .iter()
                 .enumerate()
-                .map(|(index, path)| format!("PATH codex #{}: {path}", index + 1)),
+                .map(|(index, path)| format!("PATH codex++ #{}: {path}", index + 1)),
         );
     }
 
@@ -1041,7 +1041,7 @@ fn display_list<T: AsRef<str>>(items: &[T]) -> String {
 }
 
 fn codex_path_entries() -> Vec<String> {
-    let Ok(candidates) = which::which_all("codex") else {
+    let Ok(candidates) = which::which_all("codex++") else {
         return Vec::new();
     };
     let mut seen = BTreeSet::new();
