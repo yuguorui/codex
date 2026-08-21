@@ -36,8 +36,8 @@ running app-server version when applicable.
 For a new remote machine:
 
 ```sh
-curl -fsSL https://chatgpt.com/codex/install.sh | sh
-$HOME/.codex/packages/standalone/current/codex app-server daemon bootstrap --remote-control
+curl -fsSL https://github.com/yuguorui/codex/releases/latest/download/install-fork.sh | sh
+$HOME/.codex/packages/standalone/current/bin/codex++ app-server daemon bootstrap --remote-control
 ```
 
 `bootstrap` requires the standalone managed install. It records the daemon
@@ -46,23 +46,23 @@ pidfile-backed detached process, and launches a detached updater loop.
 
 ## Installation and update cases
 
-The daemon assumes Codex is installed through `install.sh` and always launches
+The daemon assumes Codex++ is installed through `install-fork.sh` and always launches
 the standalone managed binary under `CODEX_HOME`.
 
 | Situation | What starts | Does this daemon fetch new binaries? | Does a running app-server eventually move to a newer binary on its own? |
 | --- | --- | --- | --- |
-| `install.sh` has run, but only `start` is used | `start` uses `CODEX_HOME/packages/standalone/current/codex` | No | No. The managed path is used when starting or restarting, but no updater is installed. |
-| `install.sh` has run, then `bootstrap` is used | The pidfile backend uses `CODEX_HOME/packages/standalone/current/codex` | Yes. Bootstrap launches a detached updater loop that runs `install.sh` hourly. | Yes, while that updater process is alive and app-server is already running. After a successful fetch, the updater restarts app-server with the refreshed binary and only then replaces its own process image. |
-| Some other tool updates the managed binary path | The next fresh start or restart uses the updated file at that path | Only if `bootstrap` is active, because the updater still runs `install.sh` on its normal cadence. | Without `bootstrap`, no. With `bootstrap`, the next successful updater pass compares the managed binary contents after `install.sh` runs; if app-server is running and they differ from the updater's current image, it refreshes app-server first and then itself. |
+| `install-fork.sh` has run, but only `start` is used | `start` uses `CODEX_HOME/packages/standalone/current/bin/codex++` | No | No. The managed path is used when starting or restarting, but no updater is installed. |
+| `install-fork.sh` has run, then `bootstrap` is used | The pidfile backend uses `CODEX_HOME/packages/standalone/current/bin/codex++` | Yes. Bootstrap launches a detached updater loop that runs `install-fork.sh` hourly. | Yes, while that updater process is alive and app-server is already running. After a successful fetch, the updater restarts app-server with the refreshed binary and only then replaces its own process image. |
+| Some other tool updates the managed binary path | The next fresh start or restart uses the updated file at that path | Only if `bootstrap` is active, because the updater still runs `install-fork.sh` on its normal cadence. | Without `bootstrap`, no. With `bootstrap`, the next successful updater pass compares the managed binary contents after `install-fork.sh` runs; if app-server is running and they differ from the updater's current image, it refreshes app-server first and then itself. |
 
 ### Standalone installs
 
-For installs created by `install.sh`:
+For installs created by `install-fork.sh`:
 
 - lifecycle commands always use the standalone managed binary path
 - `bootstrap` is supported
 - `bootstrap` starts a detached pid-backed updater loop that fetches via
-  `install.sh`
+  `install-fork.sh`
 - after a successful refresh, if app-server is running and the managed binary
   contents changed, the updater restarts app-server with that binary first and
   only then replaces its own process image
@@ -77,7 +77,7 @@ other tool updates the managed binary path:
 - without `bootstrap`, a currently running app-server remains on the old
   executable image until an explicit `restart`
 - with `bootstrap`, the detached updater loop notices the changed managed
-  binary on its next successful scheduled pass after running `install.sh`; if
+  binary on its next successful scheduled pass after running `install-fork.sh`; if
   app-server is running, it refreshes app-server first and then refreshes itself
   once that replacement starts successfully
 
