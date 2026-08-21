@@ -26,7 +26,7 @@ use ratatui::widgets::Clear;
 use ratatui::widgets::WidgetRef;
 use tokio_stream::StreamExt;
 
-const RELEASE_NOTES_URL: &str = "https://github.com/openai/codex/releases/latest";
+const RELEASE_NOTES_URL: &str = "https://github.com/yuguorui/codex/releases/latest";
 
 pub(crate) enum UpdatePromptOutcome {
     Continue,
@@ -256,7 +256,7 @@ mod tests {
         UpdatePromptScreen::new(
             FrameRequester::test_dummy(),
             "9.9.9".into(),
-            UpdateAction::NpmGlobalLatest,
+            UpdateAction::StandaloneUnix,
         )
     }
 
@@ -267,7 +267,13 @@ mod tests {
         terminal
             .draw(|frame| frame.render_widget_ref(&screen, frame.area()))
             .expect("render update prompt");
-        insta::assert_snapshot!("update_prompt_modal", terminal.backend());
+        let contents = terminal.backend().vt100().screen().contents();
+        let contents = contents
+            .lines()
+            .map(str::trim_end)
+            .collect::<Vec<_>>()
+            .join("\n");
+        insta::assert_snapshot!("update_prompt_modal", contents);
     }
 
     #[test]
