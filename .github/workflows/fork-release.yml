@@ -365,6 +365,38 @@ jobs:
             printf '%s\n' "$resolved"
           }
 
+          installed_version() {
+            installed_bin="$1"
+            if [ ! -x "$installed_bin" ]; then
+              return
+            fi
+            "$installed_bin" --version 2>/dev/null |
+              sed -n 's/.* \([0-9][0-9A-Za-z.+-]*\)$/\1/p' |
+              head -n 1
+          }
+
+          release_install_is_complete() {
+            release_dir="$1"
+            [ -d "$release_dir" ] &&
+              [ -f "$release_dir/codex-package.json" ] &&
+              [ -x "$release_dir/bin/$PACKAGE_BIN_NAME" ] &&
+              [ -x "$release_dir/bin/codex-code-mode-host" ] &&
+              [ -x "$release_dir/codex-path/rg" ] ||
+              return 1
+
+            if [ "$target" = "x86_64-unknown-linux-musl" ]; then
+              [ -x "$release_dir/codex-resources/bwrap" ] || return 1
+            fi
+          }
+
+          activate_release() {
+            release_dir="$1"
+            mkdir -p "$BIN_DIR" "$RELEASES_DIR"
+            ln -sfn "$release_dir" "$CURRENT_LINK"
+            ln -sfn "$release_dir/bin/$PACKAGE_BIN_NAME" "$BIN_DIR/$BIN_NAME"
+            ln -sfn "$release_dir/bin/codex-code-mode-host" "$BIN_DIR/codex-code-mode-host"
+          }
+
           file_sha256() {
             if command -v sha256sum >/dev/null 2>&1; then
               sha256sum "$1" | awk '{print $1}'
@@ -398,6 +430,15 @@ jobs:
           tag="rust-v$version"
           asset="codex-package-$target.tar.gz"
           base_url="https://github.com/$REPO/releases/download/$tag"
+          release_dir="$RELEASES_DIR/$version-$target"
+
+          current_version="$(installed_version "$release_dir/bin/$PACKAGE_BIN_NAME")"
+          if [ "$current_version" = "$version" ] && release_install_is_complete "$release_dir"; then
+            activate_release "$release_dir"
+            echo "$BIN_NAME $version is already up to date."
+            exit 0
+          fi
+
           tmp_dir="$(mktemp -d)"
           trap 'rm -rf "$tmp_dir"' EXIT INT TERM
 
@@ -413,19 +454,51 @@ jobs:
             exit 1
           fi
 
-          release_dir="$RELEASES_DIR/$version-$target"
           rm -rf "$release_dir"
           mkdir -p "$release_dir"
           tar -C "$release_dir" -xzf "$tmp_dir/$asset"
 
-          ln -sfn "$release_dir" "$CURRENT_LINK"
-          ln -sfn "$release_dir/bin/$PACKAGE_BIN_NAME" "$BIN_DIR/$BIN_NAME"
-          ln -sfn "$release_dir/bin/codex-code-mode-host" "$BIN_DIR/codex-code-mode-host"
+          activate_release "$release_dir"
           echo "Installed $BIN_NAME $version for $target at $release_dir"
           echo "Ensure $BIN_DIR is on your PATH."
+          echo "Restart any running Codex++ processes to use this version."
           INSTALL_SCRIPT
           sed -i "s#__RELEASE_REPOSITORY__#${RELEASE_REPOSITORY}#g" dist/install-fork.sh
           chmod +x dist/install-fork.sh
+
+      - name: Test fork installer up-to-date path
+        shell: bash
+        env:
+          RELEASE_VERSION: ${{ needs.metadata.outputs.version }}
+        run: |
+          set -euo pipefail
+          test_root="${RUNNER_TEMP}/fork-installer-test"
+          codex_home="${test_root}/codex-home"
+          bin_dir="${test_root}/bin"
+          release_dir="${codex_home}/packages/standalone/releases/${RELEASE_VERSION}-x86_64-unknown-linux-musl"
+
+          mkdir -p \
+            "${release_dir}/bin" \
+            "${release_dir}/codex-resources" \
+            "${release_dir}/codex-path" \
+            "$bin_dir"
+          cat > "${release_dir}/bin/codex++" <<EOF
+          #!/bin/sh
+          echo "codex-cli ${RELEASE_VERSION}"
+          EOF
+          chmod +x "${release_dir}/bin/codex++"
+          touch "${release_dir}/codex-package.json"
+          touch "${release_dir}/bin/codex-code-mode-host"
+          touch "${release_dir}/codex-resources/bwrap"
+          touch "${release_dir}/codex-path/rg"
+          chmod +x \
+            "${release_dir}/bin/codex-code-mode-host" \
+            "${release_dir}/codex-resources/bwrap" \
+            "${release_dir}/codex-path/rg"
+          output="$(CODEX_HOME="$codex_home" CODEX_INSTALL_DIR="$bin_dir" sh dist/install-fork.sh "$RELEASE_VERSION")"
+          grep -Fx "codex++ ${RELEASE_VERSION} is already up to date." <<<"$output"
+          test -x "${codex_home}/packages/standalone/current/bin/codex++"
+          test -x "${bin_dir}/codex++"
 
       - name: Create GitHub Release
         uses: softprops/action-gh-release@153bb8e04406b158c6c84fc1615b65b24149a1fe # v2.6.1
