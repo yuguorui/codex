@@ -8,71 +8,34 @@ use codex_install_context::StandalonePlatform;
 /// Update action the CLI should perform after the TUI exits.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum UpdateAction {
-    /// Update via `npm install -g @openai/codex@latest`.
-    NpmGlobalLatest,
-    /// Update via `bun install -g @openai/codex@latest`.
-    BunGlobalLatest,
-    /// Update via `vp install -g @openai/codex@latest`.
-    VitePlusGlobalLatest,
-    /// Update via `pnpm add -g @openai/codex@latest`.
-    PnpmGlobalLatest,
-    /// Update via `brew upgrade codex`.
-    BrewUpgrade,
-    /// Update via `curl -fsSL https://chatgpt.com/codex/install.sh | CODEX_NON_INTERACTIVE=1 sh`.
+    /// Update via the Codex++ standalone installer.
     StandaloneUnix,
-    /// Update via `$env:CODEX_NON_INTERACTIVE=1; irm https://chatgpt.com/codex/install.ps1 | iex`.
-    StandaloneWindows,
 }
 
 impl UpdateAction {
     #[cfg(any(not(debug_assertions), test))]
     pub(crate) fn from_install_context(context: &InstallContext) -> Option<Self> {
         match &context.method {
-            InstallMethod::Npm => Some(UpdateAction::NpmGlobalLatest),
-            InstallMethod::Bun => Some(UpdateAction::BunGlobalLatest),
-            InstallMethod::VitePlus => Some(UpdateAction::VitePlusGlobalLatest),
-            InstallMethod::Pnpm => Some(UpdateAction::PnpmGlobalLatest),
-            InstallMethod::Brew => Some(UpdateAction::BrewUpgrade),
-            InstallMethod::Standalone { platform, .. } => Some(match platform {
-                StandalonePlatform::Unix => UpdateAction::StandaloneUnix,
-                StandalonePlatform::Windows => UpdateAction::StandaloneWindows,
-            }),
-            InstallMethod::Other => None,
+            InstallMethod::Standalone {
+                platform: StandalonePlatform::Unix,
+                ..
+            } => Some(UpdateAction::StandaloneUnix),
+            InstallMethod::Standalone {
+                platform: StandalonePlatform::Windows,
+                ..
+            }
+            | InstallMethod::Npm
+            | InstallMethod::Bun
+            | InstallMethod::VitePlus
+            | InstallMethod::Pnpm
+            | InstallMethod::Brew
+            | InstallMethod::Other => None,
         }
     }
 
-    /// Returns the list of command-line arguments for invoking the update.
-    pub fn command_args(self) -> (&'static str, &'static [&'static str]) {
-        match self {
-            UpdateAction::NpmGlobalLatest => ("npm", &["install", "-g", "@openai/codex"]),
-            UpdateAction::BunGlobalLatest => ("bun", &["install", "-g", "@openai/codex"]),
-            UpdateAction::VitePlusGlobalLatest => ("vp", &["install", "-g", "@openai/codex"]),
-            UpdateAction::PnpmGlobalLatest => ("pnpm", &["add", "-g", "@openai/codex"]),
-            UpdateAction::BrewUpgrade => ("brew", &["upgrade", "--cask", "codex"]),
-            UpdateAction::StandaloneUnix => (
-                "sh",
-                &[
-                    "-c",
-                    "curl -fsSL https://chatgpt.com/codex/install.sh | CODEX_NON_INTERACTIVE=1 sh",
-                ],
-            ),
-            UpdateAction::StandaloneWindows => (
-                "powershell",
-                &[
-                    "-ExecutionPolicy",
-                    "Bypass",
-                    "-c",
-                    "$env:CODEX_NON_INTERACTIVE=1; irm https://chatgpt.com/codex/install.ps1 | iex",
-                ],
-            ),
-        }
-    }
-
-    /// Returns string representation of the command-line arguments for invoking the update.
-    pub fn command_str(self) -> String {
-        let (command, args) = self.command_args();
-        shlex::try_join(std::iter::once(command).chain(args.iter().copied()))
-            .unwrap_or_else(|_| format!("{command} {}", args.join(" ")))
+    /// Returns the command users can run manually to invoke the same built-in updater.
+    pub fn command_str(self) -> &'static str {
+        "codex++ update"
     }
 }
 
@@ -105,28 +68,28 @@ mod tests {
                 method: InstallMethod::Npm,
                 package_layout: None,
             }),
-            Some(UpdateAction::NpmGlobalLatest)
+            None
         );
         assert_eq!(
             UpdateAction::from_install_context(&InstallContext {
                 method: InstallMethod::Bun,
                 package_layout: None,
             }),
-            Some(UpdateAction::BunGlobalLatest)
+            None
         );
         assert_eq!(
             UpdateAction::from_install_context(&InstallContext {
                 method: InstallMethod::Pnpm,
                 package_layout: None,
             }),
-            Some(UpdateAction::PnpmGlobalLatest)
+            None
         );
         assert_eq!(
             UpdateAction::from_install_context(&InstallContext {
                 method: InstallMethod::Brew,
                 package_layout: None,
             }),
-            Some(UpdateAction::BrewUpgrade)
+            None
         );
         assert_eq!(
             UpdateAction::from_install_context(&InstallContext {
@@ -148,33 +111,12 @@ mod tests {
                 },
                 package_layout: None,
             }),
-            Some(UpdateAction::StandaloneWindows)
+            None
         );
     }
 
     #[test]
-    fn standalone_update_commands_rerun_latest_installer() {
-        assert_eq!(
-            UpdateAction::StandaloneUnix.command_args(),
-            (
-                "sh",
-                &[
-                    "-c",
-                    "curl -fsSL https://chatgpt.com/codex/install.sh | CODEX_NON_INTERACTIVE=1 sh"
-                ][..],
-            )
-        );
-        assert_eq!(
-            UpdateAction::StandaloneWindows.command_args(),
-            (
-                "powershell",
-                &[
-                    "-ExecutionPolicy",
-                    "Bypass",
-                    "-c",
-                    "$env:CODEX_NON_INTERACTIVE=1; irm https://chatgpt.com/codex/install.ps1 | iex"
-                ][..],
-            )
-        );
+    fn standalone_update_command_uses_the_builtin_updater() {
+        assert_eq!(UpdateAction::StandaloneUnix.command_str(), "codex++ update");
     }
 }

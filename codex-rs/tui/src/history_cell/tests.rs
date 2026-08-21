@@ -1220,35 +1220,7 @@ fn standalone_unix_update_available_history_cell_snapshot() {
 }
 
 #[test]
-fn standalone_windows_update_available_history_cell_snapshot() {
-    let cell =
-        UpdateAvailableHistoryCell::new("9.9.9".to_string(), Some(UpdateAction::StandaloneWindows));
-    let rendered = render_lines(&cell.display_lines(/*width*/ 110)).join("\n");
 
-    insta::assert_snapshot!(rendered);
-}
-
-#[test]
-fn pnpm_update_available_history_cell_snapshot() {
-    let cell =
-        UpdateAvailableHistoryCell::new("9.9.9".to_string(), Some(UpdateAction::PnpmGlobalLatest));
-    let rendered = render_lines(&cell.display_lines(/*width*/ 110)).join("\n");
-
-    insta::assert_snapshot!(rendered);
-}
-
-#[test]
-fn vite_plus_update_available_history_cell_snapshot() {
-    let cell = UpdateAvailableHistoryCell::new(
-        "9.9.9".to_string(),
-        Some(UpdateAction::VitePlusGlobalLatest),
-    );
-    let rendered = render_lines(&cell.display_lines(/*width*/ 110)).join("\n");
-
-    insta::assert_snapshot!(rendered);
-}
-
-#[test]
 fn web_search_history_cell_without_detail_snapshot() {
     let cell = new_web_search_call("call-1".to_string(), String::new(), WebSearchAction::Other);
     let rendered = render_lines(&cell.display_lines(/*width*/ 64)).join("\n");
@@ -3102,10 +3074,8 @@ fn blank_lines_should_not_have_indent_prefix() {
             // Blank line should have empty prefix, not "  "
             assert!(
                 text.is_empty() || text == " ",
-                "Line {} is blank but has indent prefix {:?}. \
-                 Blank lines should have empty prefix to avoid Paragraph::wrap splitting them.",
-                i,
-                text
+                "Line {i} is blank but has indent prefix {text:?}. \
+                 Blank lines should have empty prefix to avoid Paragraph::wrap splitting them."
             );
         }
     }
@@ -3137,7 +3107,6 @@ fn blank_line_prefix_regression() {
 
     assert!(
         text.is_empty(),
-        "Blank line should have empty prefix, got: {:?}",
-        text
+        "Blank line should have empty prefix, got: {text:?}"
     );
 }

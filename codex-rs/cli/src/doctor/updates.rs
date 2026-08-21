@@ -40,8 +40,8 @@ use super::npm_global_root_check;
 use super::run_command;
 
 const VERSION_FILE_NAME: &str = "version.json";
-const GITHUB_LATEST_RELEASE_URL: &str = "https://api.github.com/repos/openai/codex/releases/latest";
-const HOMEBREW_CASK_API_URL: &str = "https://formulae.brew.sh/api/cask/codex.json";
+const GITHUB_LATEST_RELEASE_URL: &str =
+    "https://api.github.com/repos/yuguorui/codex/releases/latest";
 #[cfg(all(target_os = "macos", target_arch = "x86_64"))]
 const DESKTOP_UPDATE_URL: &str = "https://persistent.oaistatic.com/codex-app-prod/appcast-x64.xml";
 #[cfg(all(target_os = "macos", not(target_arch = "x86_64")))]
@@ -115,7 +115,7 @@ pub(super) fn updates_check(config: &Config) -> DoctorCheck {
     match fetch_latest_version(&install_context) {
         Ok(latest_version) => {
             details.push(format!("latest version: {latest_version}"));
-            if is_newer(&latest_version, env!("CARGO_PKG_VERSION")) == Some(true) {
+            if is_newer(&latest_version, codex_cli::CODEX_CLI_DISPLAY_VERSION) == Some(true) {
                 details.push("latest version status: newer version is available".to_string());
             } else {
                 details.push("latest version status: current version is not older".to_string());
@@ -430,26 +430,18 @@ fn push_cached_version_details(details: &mut Vec<String>, version_file: &Path) {
 
 fn update_action_label(context: &InstallContext) -> &'static str {
     match &context.method {
-        InstallMethod::Npm => "npm install -g @openai/codex",
-        InstallMethod::Bun => "bun install -g @openai/codex",
-        InstallMethod::VitePlus => "vp install -g @openai/codex",
-        InstallMethod::Pnpm => "pnpm add -g @openai/codex",
-        InstallMethod::Brew => "brew upgrade --cask codex",
-        InstallMethod::Standalone { .. } => "standalone installer",
-        InstallMethod::Other => "manual or unknown",
-    }
-}
-
-fn fetch_latest_version(context: &InstallContext) -> Result<String, String> {
-    match &context.method {
-        InstallMethod::Brew => fetch_homebrew_cask_version(),
+        InstallMethod::Standalone { .. } => "Codex++ standalone installer",
         InstallMethod::Npm
         | InstallMethod::Bun
         | InstallMethod::VitePlus
         | InstallMethod::Pnpm
-        | InstallMethod::Standalone { .. }
-        | InstallMethod::Other => fetch_latest_github_release_version(),
+        | InstallMethod::Brew => "unsupported upstream install",
+        InstallMethod::Other => "manual or unknown",
     }
+}
+
+fn fetch_latest_version(_context: &InstallContext) -> Result<String, String> {
+    fetch_latest_github_release_version()
 }
 
 fn fetch_latest_github_release_version() -> Result<String, String> {
@@ -465,15 +457,6 @@ fn fetch_latest_github_release_version() -> Result<String, String> {
         .ok_or_else(|| format!("failed to parse latest tag {}", info.tag_name))
 }
 
-fn fetch_homebrew_cask_version() -> Result<String, String> {
-    #[derive(Deserialize)]
-    struct HomebrewCaskInfo {
-        version: String,
-    }
-
-    http_get_json::<HomebrewCaskInfo>(HOMEBREW_CASK_API_URL).map(|info| info.version)
-}
-
 fn http_get_json<T>(url: &str) -> Result<T, String>
 where
     T: for<'de> Deserialize<'de>,
@@ -484,17 +467,33 @@ where
 
 fn is_newer(latest: &str, current: &str) -> Option<bool> {
     match (parse_version(latest), parse_version(current)) {
-        (Some(latest), Some(current)) => Some(latest > current),
-        (Some(_), None) | (None, Some(_)) | (None, None) => None,
+        (Some(ParsedVersion::Semver(latest)), Some(ParsedVersion::Semver(current))) => {
+            Some(latest > current)
+        }
+        (Some(ParsedVersion::ForkRelease(latest)), Some(ParsedVersion::ForkRelease(current))) => {
+            Some(latest > current)
+        }
+        _ => None,
     }
 }
 
-fn parse_version(value: &str) -> Option<(u64, u64, u64)> {
-    let mut parts = value.trim().split('.');
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ParsedVersion {
+    Semver((u64, u64, u64)),
+    ForkRelease(u64),
+}
+
+fn parse_version(value: &str) -> Option<ParsedVersion> {
+    let value = value.trim();
+    if value.len() == 12 && value.bytes().all(|byte| byte.is_ascii_digit()) {
+        return value.parse().ok().map(ParsedVersion::ForkRelease);
+    }
+
+    let mut parts = value.split('.');
     let major = parts.next()?.parse::<u64>().ok()?;
     let minor = parts.next()?.parse::<u64>().ok()?;
     let patch = parts.next()?.parse::<u64>().ok()?;
-    Some((major, minor, patch))
+    Some(ParsedVersion::Semver((major, minor, patch)))
 }
 
 #[derive(Deserialize)]
@@ -629,20 +628,27 @@ mod tests {
     }
 
     #[test]
+    fn is_newer_compares_fork_release_versions() {
+        assert_eq!(is_newer("202608231531", "202608231530"), Some(true));
+        assert_eq!(is_newer("202608231530", "202608231531"), Some(false));
+        assert_eq!(is_newer("202608231530", "0.145.0"), None);
+    }
+
+    #[test]
     fn update_action_labels_install_contexts() {
         assert_eq!(
             update_action_label(&InstallContext {
                 method: InstallMethod::Npm,
                 package_layout: None,
             }),
-            "npm install -g @openai/codex"
+            "unsupported upstream install"
         );
         assert_eq!(
             update_action_label(&InstallContext {
                 method: InstallMethod::Pnpm,
                 package_layout: None,
             }),
-            "pnpm add -g @openai/codex"
+            "unsupported upstream install"
         );
         assert_eq!(
             update_action_label(&InstallContext {
