@@ -1,3 +1,4 @@
+use codex_protocol::models::ContentItemKind;
 use codex_protocol::protocol::AdditionalContextEntry;
 use codex_protocol::protocol::AdditionalContextKind;
 
@@ -36,6 +37,10 @@ impl WorkflowChildPreamble {
 }
 
 impl ContextualUserFragment for WorkflowChildPreamble {
+    fn content_kind(&self) -> ContentItemKind {
+        workflow_child_content_kind(PREAMBLE_KEY)
+    }
+
     fn role(&self) -> &'static str {
         "developer"
     }
@@ -90,6 +95,10 @@ impl WorkflowChildTask {
 }
 
 impl ContextualUserFragment for WorkflowChildTask {
+    fn content_kind(&self) -> ContentItemKind {
+        workflow_child_content_kind(&self.key)
+    }
+
     fn role(&self) -> &'static str {
         "user"
     }
@@ -138,6 +147,10 @@ impl WorkflowChildIsolation {
 }
 
 impl ContextualUserFragment for WorkflowChildIsolation {
+    fn content_kind(&self) -> ContentItemKind {
+        workflow_child_content_kind(&self.key)
+    }
+
     fn role(&self) -> &'static str {
         "developer"
     }
@@ -186,6 +199,10 @@ impl WorkflowChildOutputContract {
 }
 
 impl ContextualUserFragment for WorkflowChildOutputContract {
+    fn content_kind(&self) -> ContentItemKind {
+        workflow_child_content_kind(&self.key)
+    }
+
     fn role(&self) -> &'static str {
         "developer"
     }
@@ -213,6 +230,10 @@ impl ContextualUserFragment for WorkflowChildOutputContract {
 
 fn application_context(key: &str, value: String) -> (String, AdditionalContextEntry) {
     additional_context(key, value, AdditionalContextKind::Application)
+}
+
+fn workflow_child_content_kind(key: &str) -> ContentItemKind {
+    ContentItemKind(format!("additional_content.{key}"))
 }
 
 fn additional_context(

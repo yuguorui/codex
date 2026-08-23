@@ -3863,11 +3863,7 @@ impl Session {
             .await
             .additional_context
             .retained_workflow_child_context();
-        items
-            .into_iter()
-            .map(ResponseItem::from)
-            .map(ResponseItemEnvelope::new)
-            .collect()
+        items.into_iter().map(ResponseItemEnvelope::new).collect()
     }
 
     pub(crate) async fn reference_context_item(&self) -> Option<TurnContextItem> {
