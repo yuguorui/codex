@@ -1,5 +1,5 @@
 use codex_context_fragments::AdditionalContextDeveloperFragment;
-use codex_protocol::models::ResponseInputItem;
+use codex_protocol::models::ResponseItem;
 use codex_protocol::protocol::AdditionalContextKind;
 use pretty_assertions::assert_eq;
 use std::collections::BTreeMap;
@@ -17,12 +17,12 @@ fn workflow_child_fragments_match_their_additional_context_representation() {
         assert!(WorkflowChildTask::matches_text(&task.render()));
         assert_eq!(task.role(), "user");
         assert!(task.requires_separate_message());
-        let expected: ResponseInputItem = task.clone().into_response_input_item();
+        let expected: ResponseItem = ContextualUserFragment::into(task.clone());
         let (key, entry) = task.into_additional_context();
         assert_eq!(entry.kind, AdditionalContextKind::Untrusted);
         let actual = WorkflowChildTask::from_additional_context(&key, &entry.value)
-            .expect("Workflow task context should round-trip")
-            .into_response_input_item();
+            .map(ContextualUserFragment::into)
+            .expect("Workflow task context should round-trip");
         assert_eq!(actual, expected);
     }
     for isolation in WorkflowChildIsolation::parts("isolation") {
@@ -90,9 +90,9 @@ fn assert_context_representation(
 ) {
     assert_eq!(fragment.role(), "developer");
     assert!(fragment.requires_separate_message());
-    let expected: ResponseInputItem = fragment.into_response_input_item();
+    let expected: ResponseItem = ContextualUserFragment::into(fragment);
     let actual =
-        AdditionalContextDeveloperFragment::new(key, entry.value).into_response_input_item();
+        ContextualUserFragment::into(AdditionalContextDeveloperFragment::new(key, entry.value));
 
     assert_eq!(actual, expected);
 }

@@ -1,3 +1,5 @@
+use codex_protocol::models::ContentItemKind;
+
 use super::ContextualUserFragment;
 
 const TOOL_NAME_MAX_CHARS: usize = 128;
@@ -21,6 +23,10 @@ impl GuardianExtensionApproval {
 }
 
 impl ContextualUserFragment for GuardianExtensionApproval {
+    fn content_kind(&self) -> ContentItemKind {
+        ContentItemKind("guardian.extension_approval".to_string())
+    }
+
     fn role(&self) -> &'static str {
         "user"
     }
