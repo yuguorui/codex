@@ -1,3 +1,4 @@
+use codex_protocol::models::ContentItemKind;
 use codex_protocol::workflow::WorkflowTaskStatus;
 use codex_protocol::workflow::WorkflowUsage;
 use serde_json::Value as JsonValue;
@@ -26,6 +27,10 @@ pub(crate) struct WorkflowNotification {
 }
 
 impl ContextualUserFragment for WorkflowNotification {
+    fn content_kind(&self) -> ContentItemKind {
+        ContentItemKind("workflow.notification".to_string())
+    }
+
     fn role(&self) -> &'static str {
         "user"
     }
