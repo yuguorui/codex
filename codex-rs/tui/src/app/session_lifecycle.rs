@@ -218,6 +218,8 @@ impl App {
             footer_hint: Some(standard_popup_hint_line()),
             items,
             initial_selected_idx,
+            is_searchable: true,
+            search_placeholder: Some("Search by name or ID".to_string()),
             ..Default::default()
         }
     }
