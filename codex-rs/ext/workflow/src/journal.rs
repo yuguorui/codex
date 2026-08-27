@@ -1004,11 +1004,6 @@ enum JournalFileIdentity {
         device: u64,
         inode: u64,
     },
-    #[cfg(windows)]
-    Windows {
-        volume: u32,
-        file_index: u64,
-    },
     Path(PathBuf),
 }
 
@@ -1022,13 +1017,11 @@ fn journal_file_identity(path: &Path) -> JournalFileIdentity {
         };
     }
     #[cfg(windows)]
-    if let Ok(metadata) = std::fs::metadata(path) {
-        use std::os::windows::fs::MetadataExt;
-        if let (Some(volume), Some(file_index)) =
-            (metadata.volume_serial_number(), metadata.file_index())
-        {
-            return JournalFileIdentity::Windows { volume, file_index };
-        }
+    if let Ok(canonical) = std::fs::canonicalize(path) {
+        // Windows paths are case-insensitive, so compare canonical paths with
+        // a normalized case to treat different spellings of one file as equal.
+        let normalized = canonical.to_string_lossy().to_lowercase();
+        return JournalFileIdentity::Path(PathBuf::from(normalized));
     }
     JournalFileIdentity::Path(path.to_path_buf())
 }
