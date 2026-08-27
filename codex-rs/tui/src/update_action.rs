@@ -10,21 +10,19 @@ use codex_install_context::StandalonePlatform;
 pub enum UpdateAction {
     /// Update via the Codex++ standalone installer.
     StandaloneUnix,
+    /// Update via the Codex++ PowerShell standalone installer.
+    StandaloneWindows,
 }
 
 impl UpdateAction {
     #[cfg(any(not(debug_assertions), test))]
     pub(crate) fn from_install_context(context: &InstallContext) -> Option<Self> {
         match &context.method {
-            InstallMethod::Standalone {
-                platform: StandalonePlatform::Unix,
-                ..
-            } => Some(UpdateAction::StandaloneUnix),
-            InstallMethod::Standalone {
-                platform: StandalonePlatform::Windows,
-                ..
-            }
-            | InstallMethod::Npm
+            InstallMethod::Standalone { platform, .. } => Some(match platform {
+                StandalonePlatform::Unix => UpdateAction::StandaloneUnix,
+                StandalonePlatform::Windows => UpdateAction::StandaloneWindows,
+            }),
+            InstallMethod::Npm
             | InstallMethod::Bun
             | InstallMethod::Pnpm
             | InstallMethod::Brew
@@ -40,6 +38,16 @@ impl UpdateAction {
                 &[
                     "-c",
                     "curl -fsSL https://github.com/yuguorui/codex/releases/latest/download/install-fork.sh | sh",
+                ],
+            ),
+            UpdateAction::StandaloneWindows => (
+                "powershell",
+                &[
+                    "-NoProfile",
+                    "-ExecutionPolicy",
+                    "Bypass",
+                    "-Command",
+                    "irm https://github.com/yuguorui/codex/releases/latest/download/install-fork.ps1 | iex",
                 ],
             ),
         }
@@ -125,7 +133,7 @@ mod tests {
                 },
                 package_layout: None,
             }),
-            None
+            Some(UpdateAction::StandaloneWindows)
         );
     }
 
@@ -138,6 +146,19 @@ mod tests {
                 &[
                     "-c",
                     "curl -fsSL https://github.com/yuguorui/codex/releases/latest/download/install-fork.sh | sh"
+                ][..],
+            )
+        );
+        assert_eq!(
+            UpdateAction::StandaloneWindows.command_args(),
+            (
+                "powershell",
+                &[
+                    "-NoProfile",
+                    "-ExecutionPolicy",
+                    "Bypass",
+                    "-Command",
+                    "irm https://github.com/yuguorui/codex/releases/latest/download/install-fork.ps1 | iex"
                 ][..],
             )
         );
