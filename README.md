@@ -36,6 +36,10 @@ For a detailed technical breakdown, see [`codex-rs/README.md`](./codex-rs/README
 curl -fsSL https://github.com/yuguorui/codex/releases/latest/download/install-fork.sh | sh
 ```
 
+```powershell
+irm https://github.com/yuguorui/codex/releases/latest/download/install-fork.ps1 | iex
+```
+
 The install script resolves the latest release, verifies SHA-256 checksums, stores the standalone package under `~/.codex/packages/standalone`, and installs the `codex++` command into `~/.local/bin`.
 
 Environment variables:
@@ -51,18 +55,6 @@ cargo build --release --bin codex
 # Binary appears at target/release/codex
 # Copy or symlink it as codex++ to match the fork release command name
 ```
-
-The standalone installers download from `https://releases.openai.com/codex` by default and fall back to GitHub Releases if a metadata or asset download is unavailable. To force GitHub Releases, set `CODEX_INSTALLER_USE_RELEASES_OPENAI_COM` to `false` (`0` and `no` are also accepted):
-
-```shell
-curl -fsSL https://chatgpt.com/codex/install.sh | CODEX_INSTALLER_USE_RELEASES_OPENAI_COM=false sh
-```
-
-```powershell
-$env:CODEX_INSTALLER_USE_RELEASES_OPENAI_COM='false'; irm https://chatgpt.com/codex/install.ps1 | iex
-```
-
-Codex CLI can also be installed via the following package managers:
 
 ### Quick usage
 
