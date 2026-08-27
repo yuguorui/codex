@@ -85,7 +85,11 @@ jobs:
             binaries: "codex codex-responses-api-proxy"
             cargo-build-jobs: "4"
             release-codegen-units: "8"
-
+          - runner: windows-latest
+            target: x86_64-pc-windows-msvc
+            binaries: "codex codex-code-mode-host codex-responses-api-proxy codex-command-runner codex-windows-sandbox-setup"
+            cargo-build-jobs: "4"
+            release-codegen-units: "8"
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
@@ -115,6 +119,16 @@ jobs:
       - uses: dtolnay/rust-toolchain@e081816240890017053eacbb1bdf337761dc5582 # 1.95.0
         with:
           targets: ${{ matrix.target }}
+
+      - name: Install DotSlash for package compression
+        if: ${{ contains(matrix.target, 'pc-windows-msvc') }}
+        uses: facebook/install-dotslash@1e4e7b3e07eaca387acb98f1d4720e0bee8dbb6a # v2
+
+      - name: Configure MSVC linker
+        if: ${{ contains(matrix.target, 'pc-windows-msvc') }}
+        uses: ./.github/actions/setup-msvc-env
+        with:
+          target: ${{ matrix.target }}
 
       - name: Use hermetic Cargo home for musl
         if: ${{ contains(matrix.target, 'musl') }}
@@ -192,6 +206,9 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          if [[ "${{ matrix.target }}" == "x86_64-pc-windows-msvc" ]]; then
+            export LIBSQLITE3_FLAGS=SQLITE_DISABLE_INTRINSIC
+          fi
           build_args=()
           for binary in ${{ matrix.binaries }}; do
             build_args+=(--bin "$binary")
@@ -210,6 +227,14 @@ jobs:
             fi
             binaries+=("$binary")
           done
+          if [[ "$target" == *pc-windows-msvc ]]; then
+            for binary in "${binaries[@]}"; do
+              pdb_name="${binary//-/_}"
+              if [[ ! -f "target/${target}/release/${binary}.pdb" && -f "target/${target}/release/${pdb_name}.pdb" ]]; then
+                cp "target/${target}/release/${pdb_name}.pdb" "target/${target}/release/${binary}.pdb"
+              fi
+            done
+          fi
           bash "${GITHUB_WORKSPACE}/.github/scripts/archive-release-symbols-and-strip-binaries.sh" \
             --target "$target" \
             --artifact-name "$target" \
@@ -232,8 +257,13 @@ jobs:
           dest="dist/${target}"
           mkdir -p "$dest"
 
+          exe_suffix=""
+          if [[ "$target" == *pc-windows-msvc ]]; then
+            exe_suffix=".exe"
+          fi
+
           for binary in ${{ matrix.binaries }}; do
-            cp "target/${target}/release/${binary}" "$dest/${binary}-${target}"
+            cp "target/${target}/release/${binary}${exe_suffix}" "$dest/${binary}-${target}${exe_suffix}"
           done
 
           bash "${GITHUB_WORKSPACE}/.github/scripts/build-codex-package-archive.sh" \
@@ -465,6 +495,202 @@ jobs:
           INSTALL_SCRIPT
           sed -i "s#__RELEASE_REPOSITORY__#${RELEASE_REPOSITORY}#g" dist/install-fork.sh
           chmod +x dist/install-fork.sh
+
+      - name: Add Windows fork install script
+        shell: bash
+        env:
+          RELEASE_REPOSITORY: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          cat > dist/install-fork.ps1 <<'INSTALL_PS1'
+          <#
+          .SYNOPSIS
+          Install the Codex++ standalone release on Windows.
+
+          .DESCRIPTION
+          Downloads the x86_64-pc-windows-msvc package archive for the requested
+          release, verifies its SHA-256 checksum, extracts it under
+          %CODEX_HOME%\packages\standalone, and installs the codex++ executable
+          into the binary directory.
+
+          .PARAMETER Version
+          Release to install: "latest" (default), "rust-vyyyymmddhhmm",
+          "vyyyymmddhhmm", or "yyyymmddhhmm".
+
+          Environment variables:
+            CODEX_RELEASE_REPOSITORY  owner/repo to download from (default __RELEASE_REPOSITORY__)
+            CODEX_INSTALL_DIR         directory that receives the executable (default %USERPROFILE%\.local\bin)
+            CODEX_BIN_NAME            installed command name (default codex++)
+            CODEX_HOME                Codex home directory (default %USERPROFILE%\.codex)
+          #>
+          [CmdletBinding()]
+          param(
+              [string] $Version = "latest"
+          )
+
+          $ErrorActionPreference = "Stop"
+          $ProgressPreference = "SilentlyContinue"
+
+          $repo = "__RELEASE_REPOSITORY__"
+          if ($env:CODEX_RELEASE_REPOSITORY) { $repo = $env:CODEX_RELEASE_REPOSITORY }
+          $binName = "codex++"
+          if ($env:CODEX_BIN_NAME) { $binName = $env:CODEX_BIN_NAME }
+          $codexHome = Join-Path $HOME ".codex"
+          if ($env:CODEX_HOME) { $codexHome = $env:CODEX_HOME }
+          $binDir = Join-Path $HOME ".local\bin"
+          if ($env:CODEX_INSTALL_DIR) { $binDir = $env:CODEX_INSTALL_DIR }
+
+          $packageBinName = "codex++"
+          $target = "x86_64-pc-windows-msvc"
+          $standaloneRoot = Join-Path $codexHome "packages\standalone"
+          $releasesDir = Join-Path $standaloneRoot "releases"
+          $currentLink = Join-Path $standaloneRoot "current"
+
+          # Only x64 Windows builds are published by the fork release workflow.
+          if ($env:PROCESSOR_ARCHITECTURE -eq "ARM64" -or $env:PROCESSOR_ARCHITEW6432 -eq "ARM64") {
+              throw "This fork release only supports x64 Windows (no ARM64 builds yet)."
+          }
+          if (-not [System.Environment]::Is64BitOperatingSystem) {
+              throw "This fork release requires 64-bit Windows."
+          }
+
+          function Normalize-Version {
+              param([string] $Value)
+              if ([string]::IsNullOrEmpty($Value) -or $Value -eq "latest") { return "latest" }
+              if ($Value.StartsWith("rust-v")) { return $Value.Substring("rust-v".Length) }
+              if ($Value.StartsWith("v")) { return $Value.Substring(1) }
+              return $Value
+          }
+
+          function Resolve-Version {
+              param([string] $Value)
+              $normalized = Normalize-Version -Value $Value
+              if ($normalized -ne "latest") { return $normalized }
+
+              $release = Invoke-RestMethod -Uri "https://api.github.com/repos/$repo/releases/latest" -Headers @{ "User-Agent" = "codex-fork-installer" }
+              if ($release.tag_name -match "^rust-v([0-9]+)$") {
+                  return $Matches[1]
+              }
+              throw "Failed to resolve latest release for $repo."
+          }
+
+          function Get-InstalledVersion {
+              param([string] $BinaryPath)
+              if (-not (Test-Path $BinaryPath)) { return $null }
+              $output = & $BinaryPath --version 2>$null | Select-Object -Last 1
+              if ($LASTEXITCODE -ne 0) { return $null }
+              if ($output -match " ([0-9][0-9A-Za-z.+-]*)$") {
+                  return $Matches[1]
+              }
+              return $null
+          }
+
+          function Test-ReleaseIsComplete {
+              param([string] $ReleaseDir)
+              $required = @(
+                  (Join-Path $ReleaseDir "codex-package.json"),
+                  (Join-Path $ReleaseDir "bin\$packageBinName.exe"),
+                  (Join-Path $ReleaseDir "bin\codex-code-mode-host.exe"),
+                  (Join-Path $ReleaseDir "codex-path\rg.exe")
+              )
+              foreach ($path in $required) {
+                  if (-not (Test-Path $path)) { return $false }
+              }
+              return $true
+          }
+
+          function Activate-Release {
+              param([string] $ReleaseDir)
+              New-Item -ItemType Directory -Force -Path $binDir | Out-Null
+              New-Item -ItemType Directory -Force -Path $releasesDir | Out-Null
+
+              # Recreate the "current" junction without touching its target.
+              if (Test-Path $currentLink -PathType Any) {
+                  & cmd.exe /c rmdir "`"$currentLink`""
+                  if ($LASTEXITCODE -ne 0) { throw "Failed to replace the current link at $currentLink" }
+              }
+              New-Item -ItemType Junction -Path $currentLink -Target $ReleaseDir | Out-Null
+
+              Copy-Item -Path (Join-Path $ReleaseDir "bin\$packageBinName.exe") -Destination (Join-Path $binDir "$binName.exe") -Force
+              Copy-Item -Path (Join-Path $ReleaseDir "bin\codex-code-mode-host.exe") -Destination (Join-Path $binDir "codex-code-mode-host.exe") -Force
+          }
+
+          $version = Resolve-Version -Value $Version
+          $tag = "rust-v$version"
+          $asset = "codex-package-$target.tar.gz"
+          $baseUrl = "https://github.com/$repo/releases/download/$tag"
+          $releaseDir = Join-Path $releasesDir "$version-$target"
+
+          $installedVersion = Get-InstalledVersion -BinaryPath (Join-Path $releaseDir "bin\$packageBinName.exe")
+          if ($installedVersion -eq $version -and (Test-ReleaseIsComplete -ReleaseDir $releaseDir)) {
+              Activate-Release -ReleaseDir $releaseDir
+              Write-Host "$binName $version is already up to date."
+              exit 0
+          }
+
+          $tempDir = Join-Path ([System.IO.Path]::GetTempPath()) ("codex-fork-install-" + [System.IO.Path]::GetRandomFileName())
+          New-Item -ItemType Directory -Path $tempDir | Out-Null
+          try {
+              $sumsPath = Join-Path $tempDir "codex-package_SHA256SUMS"
+              $archivePath = Join-Path $tempDir $asset
+              Invoke-WebRequest -Uri "$baseUrl/codex-package_SHA256SUMS" -OutFile $sumsPath
+              Invoke-WebRequest -Uri "$baseUrl/$asset" -OutFile $archivePath
+
+              $expected = $null
+              foreach ($line in Get-Content $sumsPath) {
+                  $fields = $line -split "\s+"
+                  if ($fields.Count -ge 2 -and $fields[1] -eq $asset -and $fields[0] -match "^[0-9a-fA-F]{64}$") {
+                      $expected = $fields[0]
+                      break
+                  }
+              }
+              if (-not $expected) {
+                  throw "Checksum for $asset not found in codex-package_SHA256SUMS."
+              }
+
+              $actual = (Get-FileHash -Path $archivePath -Algorithm SHA256).Hash.ToLowerInvariant()
+              if ($actual -ne $expected.ToLowerInvariant()) {
+                  throw "Checksum mismatch for $asset. Expected $expected, got $actual."
+              }
+
+              if (Test-Path $releaseDir) {
+                  Remove-Item -Path $releaseDir -Recurse -Force
+              }
+              New-Item -ItemType Directory -Path $releaseDir | Out-Null
+              & tar.exe -C $releaseDir -xzf $archivePath
+              if ($LASTEXITCODE -ne 0) {
+                  throw "Failed to extract $asset."
+              }
+
+              Activate-Release -ReleaseDir $releaseDir
+              Write-Host "Installed $binName $version for $target at $releaseDir"
+              Write-Host "Ensure $binDir is on your PATH."
+              Write-Host "Restart any running Codex++ processes to use this version."
+          }
+          finally {
+              Remove-Item -Path $tempDir -Recurse -Force -ErrorAction SilentlyContinue
+          }
+          INSTALL_PS1
+          sed -i "s#__RELEASE_REPOSITORY__#${RELEASE_REPOSITORY}#g" dist/install-fork.ps1
+
+      - name: Validate Windows fork installer syntax
+        shell: bash
+        run: |
+          set -euo pipefail
+          # shellcheck disable=SC2016 # $ tokens are PowerShell syntax, not shell expansions.
+          pwsh -NoProfile -Command '
+            $tokens = $null
+            $parseErrors = $null
+            [void][System.Management.Automation.Language.Parser]::ParseFile(
+              "$env:GITHUB_WORKSPACE/dist/install-fork.ps1",
+              [ref]$tokens,
+              [ref]$parseErrors
+            )
+            foreach ($parseError in $parseErrors) {
+              Write-Error $parseError.Message
+            }
+            exit $parseErrors.Count
+          '
 
       - name: Test fork installer up-to-date path
         shell: bash
