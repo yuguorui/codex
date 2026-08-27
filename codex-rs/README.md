@@ -8,13 +8,46 @@ Codex++ is distributed independently from the upstream Codex CLI. It cannot be i
 
 ### One-command install (recommended)
 
-Codex++ publishes its own pre-built binaries via a dedicated GitHub Actions release workflow. To install:
+Codex++ publishes pre-built binaries for macOS (Apple Silicon), Linux (x86_64), and Windows (x86_64) via a dedicated GitHub Actions release workflow. The installers below resolve the latest release, verify the SHA-256 checksum against `codex-package_SHA256SUMS`, extract the standalone package, and install the `codex++` command.
+
+**macOS / Linux** (run in a terminal):
 
 ```shell
 curl -fsSL https://github.com/yuguorui/codex/releases/latest/download/install-fork.sh | sh
 ```
 
-The install script resolves the latest release, verifies SHA-256 checksums, stores the standalone package under `~/.codex/packages/standalone`, and installs the `codex++` command into `~/.local/bin`. Set `CODEX_INSTALL_DIR` to change the install directory, `CODEX_BIN_NAME` to override the command name, and `CODEX_RELEASE_REPOSITORY` to override the release repository.
+**Windows** (run in PowerShell):
+
+```powershell
+irm https://github.com/yuguorui/codex/releases/latest/download/install-fork.ps1 | iex
+```
+
+The standalone package is stored under `~/.codex/packages/standalone` (`%USERPROFILE%\.codex\packages\standalone` on Windows), and the `codex++` command is installed into `~/.local/bin` (`%USERPROFILE%\.local\bin` on Windows). Make sure that directory is on your `PATH`.
+
+#### Installing a specific version
+
+The installers accept a version as the first argument: `latest` (default), `rust-vyyyymmddhhmm`, `vyyyymmddhhmm`, or the bare `yyyymmddhhmm`.
+
+```shell
+sh install-fork.sh rust-v202608271200
+```
+
+```powershell
+.\install-fork.ps1 202608271200
+```
+
+#### Installer options
+
+Both installers honor these environment variables:
+
+- `CODEX_RELEASE_REPOSITORY` - GitHub `owner/repo` that publishes fork releases (default: `yuguorui/codex`).
+- `CODEX_INSTALL_DIR` - directory that receives the `codex++` executable (default: `~/.local/bin`).
+- `CODEX_BIN_NAME` - installed command name (default: `codex++`).
+- `CODEX_HOME` - Codex home directory that holds the standalone package tree (default: `~/.codex`).
+
+#### Updating
+
+Run the same installer again, or run `codex update` from a release install. Codex++ also checks for a newer `rust-v<yyyymmddhhmm>` release on startup (refreshed every 20 hours) and shows a banner with an **Update now** option when one is available.
 
 You can also build from source:
 
@@ -122,7 +155,7 @@ request_max_retry_delay_ms = 15_000   # cap backoff at 15 seconds
 
 ### Fork Release Workflow
 
-A dedicated GitHub Actions workflow (`fork-release.yml`) builds and publishes pre-built binaries for macOS (Apple Silicon) and Linux (x86_64/musl) on every manual trigger. Releases are tagged `rust-v<yyyymmddhhmm>` and include SHA-256 checksums.
+A dedicated GitHub Actions workflow (`fork-release.yml`) builds and publishes pre-built binaries for macOS (Apple Silicon), Linux (x86_64/musl), and Windows (x86_64 MSVC) on every manual trigger. Releases are tagged `rust-v<yyyymmddhhmm>` and include SHA-256 checksums.
 
 ## Connecting to Chat and Anthropic Providers
 
