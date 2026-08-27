@@ -10,21 +10,19 @@ use codex_install_context::StandalonePlatform;
 pub enum UpdateAction {
     /// Update via the Codex++ standalone installer.
     StandaloneUnix,
+    /// Update via the Codex++ PowerShell standalone installer.
+    StandaloneWindows,
 }
 
 impl UpdateAction {
     #[cfg(any(not(debug_assertions), test))]
     pub(crate) fn from_install_context(context: &InstallContext) -> Option<Self> {
         match &context.method {
-            InstallMethod::Standalone {
-                platform: StandalonePlatform::Unix,
-                ..
-            } => Some(UpdateAction::StandaloneUnix),
-            InstallMethod::Standalone {
-                platform: StandalonePlatform::Windows,
-                ..
-            }
-            | InstallMethod::Npm
+            InstallMethod::Standalone { platform, .. } => Some(match platform {
+                StandalonePlatform::Unix => UpdateAction::StandaloneUnix,
+                StandalonePlatform::Windows => UpdateAction::StandaloneWindows,
+            }),
+            InstallMethod::Npm
             | InstallMethod::Bun
             | InstallMethod::VitePlus
             | InstallMethod::Pnpm
@@ -111,12 +109,16 @@ mod tests {
                 },
                 package_layout: None,
             }),
-            None
+            Some(UpdateAction::StandaloneWindows)
         );
     }
 
     #[test]
     fn standalone_update_command_uses_the_builtin_updater() {
         assert_eq!(UpdateAction::StandaloneUnix.command_str(), "codex++ update");
+        assert_eq!(
+            UpdateAction::StandaloneWindows.command_str(),
+            "codex++ update"
+        );
     }
 }
