@@ -44,7 +44,7 @@ impl ReadWorkflowResultToolExecutor {
     }
 }
 
-impl ToolExecutor<ToolCall> for ReadWorkflowResultToolExecutor {
+impl<'call> ToolExecutor<ToolCall<'call>> for ReadWorkflowResultToolExecutor {
     fn tool_name(&self) -> ToolName {
         ToolName::plain(READ_WORKFLOW_RESULT_TOOL_NAME)
     }
@@ -57,7 +57,13 @@ impl ToolExecutor<ToolCall> for ReadWorkflowResultToolExecutor {
         ToolAvailability::RootSessionOnly
     }
 
-    fn handle(&self, invocation: ToolCall) -> codex_extension_api::ToolExecutorFuture<'_> {
+    fn handle<'a>(
+        &'a self,
+        invocation: ToolCall<'call>,
+    ) -> codex_extension_api::ToolExecutorFuture<'a>
+    where
+        'call: 'a,
+    {
         Box::pin(async move {
             let args = invocation.function_arguments().and_then(parse_arguments);
             let item = ExtensionTurnItem::workflow_result_read(

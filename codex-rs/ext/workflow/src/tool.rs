@@ -210,7 +210,7 @@ pub async fn read_workflow_approval_artifact(
     })
 }
 
-impl ToolExecutor<ToolCall> for WorkflowToolExecutor {
+impl<'call> ToolExecutor<ToolCall<'call>> for WorkflowToolExecutor {
     fn tool_name(&self) -> ToolName {
         ToolName::plain(WORKFLOW_TOOL_NAME)
     }
@@ -227,7 +227,13 @@ impl ToolExecutor<ToolCall> for WorkflowToolExecutor {
         ToolAvailability::RootSessionOnly
     }
 
-    fn handle(&self, invocation: ToolCall) -> codex_extension_api::ToolExecutorFuture<'_> {
+    fn handle<'a>(
+        &'a self,
+        invocation: ToolCall<'call>,
+    ) -> codex_extension_api::ToolExecutorFuture<'a>
+    where
+        'call: 'a,
+    {
         Box::pin(async move {
             let input = serde_json::from_str::<WorkflowInput>(invocation.function_arguments()?)
                 .map_err(|error| {
@@ -242,7 +248,7 @@ impl ToolExecutor<ToolCall> for WorkflowToolExecutor {
 impl WorkflowToolExecutor {
     async fn handle_with_context(
         &self,
-        invocation: ToolCall,
+        invocation: ToolCall<'_>,
         input: WorkflowInput,
         context: WorkflowExecutionContext,
     ) -> Result<Box<dyn ToolOutput>, FunctionCallError> {
@@ -515,7 +521,7 @@ impl WorkflowToolExecutor {
 impl WorkflowToolExecutor {
     async fn execution_context(
         &self,
-        invocation: &ToolCall,
+        invocation: &ToolCall<'_>,
     ) -> Result<WorkflowExecutionContext, FunctionCallError> {
         let Some(thread_manager) = self.thread_manager.upgrade() else {
             return Err(workflow_diagnostic(

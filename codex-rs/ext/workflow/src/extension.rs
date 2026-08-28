@@ -114,7 +114,7 @@ impl ToolContributor for WorkflowExtension {
         &self,
         _session_store: &ExtensionData,
         thread_store: &ExtensionData,
-    ) -> Vec<Arc<dyn ToolExecutor<ToolCall>>> {
+    ) -> Vec<Arc<dyn for<'call> ToolExecutor<ToolCall<'call>>>> {
         let Some(thread_config) = thread_store.get::<WorkflowThreadConfig>() else {
             return Vec::new();
         };

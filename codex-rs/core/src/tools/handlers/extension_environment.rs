@@ -8,7 +8,7 @@ use crate::tools::handlers::apply_granted_turn_permissions;
 
 pub(super) async fn project_execution_environments(
     invocation: &ToolInvocation,
-) -> (Vec<ToolEnvironment>, Vec<ToolExecutionEnvironment>) {
+) -> (Vec<ToolEnvironment<'_>>, Vec<ToolExecutionEnvironment>) {
     let mut environments = Vec::new();
     let mut execution_environments = Vec::new();
     for environment in invocation.step_context.environments.turn_environments() {

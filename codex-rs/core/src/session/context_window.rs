@@ -1,6 +1,7 @@
 use super::session::Session;
 use super::turn_context::TurnContext;
 use crate::config::Config;
+use codex_features::Feature;
 use codex_protocol::config_types::AutoCompactTokenLimitScope;
 use codex_protocol::openai_models::ModelInfo;
 
@@ -40,7 +41,13 @@ pub(crate) async fn context_window_token_status_for_model(
     model_info: &ModelInfo,
 ) -> ContextWindowTokenStatus {
     let mut config = config.clone();
-    super::token_budget::apply_model_defaults(&mut config, model_info);
+    let use_model_defaults = config.features.enabled(Feature::TokenBudget)
+        && !super::token_budget::has_explicit_settings(&config);
+    config.token_budget = super::token_budget::resolve_token_budget(
+        config.token_budget.as_ref(),
+        use_model_defaults,
+        model_info,
+    );
     context_window_token_status_with_config(sess, &config, model_info).await
 }
 

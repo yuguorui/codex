@@ -86,7 +86,7 @@ impl WorkflowControlToolExecutor {
     }
 }
 
-impl ToolExecutor<ToolCall> for WorkflowControlToolExecutor {
+impl<'call> ToolExecutor<ToolCall<'call>> for WorkflowControlToolExecutor {
     fn tool_name(&self) -> ToolName {
         ToolName::plain(self.kind.tool_name())
     }
@@ -99,7 +99,13 @@ impl ToolExecutor<ToolCall> for WorkflowControlToolExecutor {
         ToolAvailability::RootSessionOnly
     }
 
-    fn handle(&self, invocation: ToolCall) -> codex_extension_api::ToolExecutorFuture<'_> {
+    fn handle<'a>(
+        &'a self,
+        invocation: ToolCall<'call>,
+    ) -> codex_extension_api::ToolExecutorFuture<'a>
+    where
+        'call: 'a,
+    {
         Box::pin(async move {
             let arguments = invocation.function_arguments()?;
             let (run_id, agent_index) = match self.kind {

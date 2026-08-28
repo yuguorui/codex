@@ -51,7 +51,7 @@ impl WaitWorkflowToolExecutor {
     }
 }
 
-impl ToolExecutor<ToolCall> for WaitWorkflowToolExecutor {
+impl<'call> ToolExecutor<ToolCall<'call>> for WaitWorkflowToolExecutor {
     fn tool_name(&self) -> ToolName {
         ToolName::plain(WAIT_WORKFLOW_TOOL_NAME)
     }
@@ -64,7 +64,13 @@ impl ToolExecutor<ToolCall> for WaitWorkflowToolExecutor {
         ToolAvailability::RootSessionOnly
     }
 
-    fn handle(&self, invocation: ToolCall) -> codex_extension_api::ToolExecutorFuture<'_> {
+    fn handle<'a>(
+        &'a self,
+        invocation: ToolCall<'call>,
+    ) -> codex_extension_api::ToolExecutorFuture<'a>
+    where
+        'call: 'a,
+    {
         Box::pin(async move {
             let args = parse_arguments(invocation.function_arguments()?)?;
             let min_timeout_ms = self.config.multi_agent_v2.min_wait_timeout_ms;
