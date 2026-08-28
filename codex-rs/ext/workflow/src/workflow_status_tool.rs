@@ -57,7 +57,7 @@ impl ListWorkflowsToolExecutor {
     }
 }
 
-impl ToolExecutor<ToolCall> for ListWorkflowsToolExecutor {
+impl<'call> ToolExecutor<ToolCall<'call>> for ListWorkflowsToolExecutor {
     fn tool_name(&self) -> ToolName {
         ToolName::plain(LIST_WORKFLOWS_TOOL_NAME)
     }
@@ -70,7 +70,13 @@ impl ToolExecutor<ToolCall> for ListWorkflowsToolExecutor {
         ToolAvailability::RootSessionOnly
     }
 
-    fn handle(&self, invocation: ToolCall) -> codex_extension_api::ToolExecutorFuture<'_> {
+    fn handle<'a>(
+        &'a self,
+        invocation: ToolCall<'call>,
+    ) -> codex_extension_api::ToolExecutorFuture<'a>
+    where
+        'call: 'a,
+    {
         Box::pin(async move {
             let args: ListWorkflowsArgs =
                 parse_arguments(LIST_WORKFLOWS_TOOL_NAME, invocation.function_arguments()?)?;
@@ -121,7 +127,7 @@ impl ListWorkflowAgentsToolExecutor {
     }
 }
 
-impl ToolExecutor<ToolCall> for ListWorkflowAgentsToolExecutor {
+impl<'call> ToolExecutor<ToolCall<'call>> for ListWorkflowAgentsToolExecutor {
     fn tool_name(&self) -> ToolName {
         ToolName::plain(LIST_WORKFLOW_AGENTS_TOOL_NAME)
     }
@@ -134,7 +140,13 @@ impl ToolExecutor<ToolCall> for ListWorkflowAgentsToolExecutor {
         ToolAvailability::RootSessionOnly
     }
 
-    fn handle(&self, invocation: ToolCall) -> codex_extension_api::ToolExecutorFuture<'_> {
+    fn handle<'a>(
+        &'a self,
+        invocation: ToolCall<'call>,
+    ) -> codex_extension_api::ToolExecutorFuture<'a>
+    where
+        'call: 'a,
+    {
         Box::pin(async move {
             let args: ListWorkflowAgentsArgs = parse_arguments(
                 LIST_WORKFLOW_AGENTS_TOOL_NAME,
@@ -189,7 +201,7 @@ impl WaitWorkflowsToolExecutor {
     }
 }
 
-impl ToolExecutor<ToolCall> for WaitWorkflowsToolExecutor {
+impl<'call> ToolExecutor<ToolCall<'call>> for WaitWorkflowsToolExecutor {
     fn tool_name(&self) -> ToolName {
         ToolName::plain(WAIT_WORKFLOWS_TOOL_NAME)
     }
@@ -202,7 +214,13 @@ impl ToolExecutor<ToolCall> for WaitWorkflowsToolExecutor {
         ToolAvailability::RootSessionOnly
     }
 
-    fn handle(&self, invocation: ToolCall) -> codex_extension_api::ToolExecutorFuture<'_> {
+    fn handle<'a>(
+        &'a self,
+        invocation: ToolCall<'call>,
+    ) -> codex_extension_api::ToolExecutorFuture<'a>
+    where
+        'call: 'a,
+    {
         Box::pin(async move {
             let args: WaitWorkflowsArgs =
                 parse_arguments(WAIT_WORKFLOWS_TOOL_NAME, invocation.function_arguments()?)?;

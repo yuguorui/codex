@@ -95,7 +95,7 @@ impl AnalyzeWorkflowInputsToolExecutor {
     }
 }
 
-impl ToolExecutor<ToolCall> for AnalyzeWorkflowInputsToolExecutor {
+impl<'call> ToolExecutor<ToolCall<'call>> for AnalyzeWorkflowInputsToolExecutor {
     fn tool_name(&self) -> ToolName {
         ToolName::plain(ANALYZE_WORKFLOW_INPUTS_TOOL_NAME)
     }
@@ -108,7 +108,13 @@ impl ToolExecutor<ToolCall> for AnalyzeWorkflowInputsToolExecutor {
         ToolExposure::DirectModelOnly
     }
 
-    fn handle(&self, invocation: ToolCall) -> codex_extension_api::ToolExecutorFuture<'_> {
+    fn handle<'a>(
+        &'a self,
+        invocation: ToolCall<'call>,
+    ) -> codex_extension_api::ToolExecutorFuture<'a>
+    where
+        'call: 'a,
+    {
         Box::pin(async move {
             let arguments = invocation.function_arguments().map_err(model_error)?;
             let args: AnalyzeWorkflowInputsArgs =

@@ -534,6 +534,7 @@ impl ChatStreamState {
                     .clone()
                     .unwrap_or_else(|| "chatcmpl".to_string()),
                 token_usage: self.token_usage.take(),
+                usage_metadata: None,
                 end_turn: None,
             }))
             .await;

@@ -528,6 +528,7 @@ impl AnthropicStreamState {
                     .clone()
                     .unwrap_or_else(|| "anthropic_msg".to_string()),
                 token_usage: self.seen_usage.then(|| self.token_usage.clone()),
+                usage_metadata: None,
                 end_turn: Some(
                     !self.completed_tool_calls && self.stop_reason.as_deref() == Some("end_turn"),
                 ),
