@@ -1,5 +1,6 @@
 use super::*;
 use crate::service::WorkflowTaskSnapshot;
+use crate::workflow_result_tool::ReadWorkflowResultToolExecutor;
 use codex_config::LoaderOverrides;
 use codex_config::types::McpServerConfig;
 use codex_config::types::McpServerEnvVar;
@@ -25,10 +26,13 @@ use codex_file_system::FileSystemSandboxContext;
 use codex_protocol::models::PermissionProfile;
 use codex_protocol::protocol::EnvironmentConfigState;
 use codex_protocol::workflow::WorkflowTaskStatus;
+use codex_tools::ToolExecutionEnvironment;
 use codex_utils_output_truncation::TruncationPolicy;
 use codex_utils_path_uri::PathUri;
 use pretty_assertions::assert_eq;
 use serde_json::json;
+use sha2::Digest;
+use sha2::Sha256;
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -430,6 +434,8 @@ async fn approved_workflow_launches_after_showing_review_details() {
     assert!(requests[0].question.contains("Script (complete):"));
     let result = output.code_mode_result(&workflow_payload());
     assert_eq!(result["status"], "async_launched");
+    assert_eq!(result["transcriptDirKind"], json!("appServerHostArtifact"));
+    assert_eq!(result["scriptPathKind"], json!("appServerHostArtifact"));
     assert_eq!(
         fixture.service.list(fixture.thread_id).await.unwrap().len(),
         1
@@ -494,6 +500,489 @@ async fn top_level_script_path_launches_file_workflow() {
             "content": "frozen input",
         })
     );
+}
+
+#[tokio::test]
+async fn read_workflow_result_can_write_a_large_result_to_the_workspace() {
+    let fixture = ToolFixture::new(AskForApproval::Never).await;
+    let source = r#"export const meta = { name: 'large-result', description: 'large result' }; return { value: 'x'.repeat(6_000) };"#;
+    let payload = workflow_payload_with_source(source);
+    let invocation = workflow_call_with_payload(
+        Arc::new(ApprovalEmitter::new(ToolApprovalDecision::Approved)),
+        payload,
+    );
+    let input = serde_json::from_str(invocation.function_arguments().unwrap()).unwrap();
+    fixture
+        .executor
+        .handle_with_context(
+            invocation,
+            input,
+            local_workflow_execution_context(&fixture.config),
+        )
+        .await
+        .unwrap();
+    fixture.wait_for_terminal().await;
+    let snapshots = fixture.service.list(fixture.thread_id).await.unwrap();
+    let [snapshot] = snapshots.as_slice() else {
+        panic!("expected one workflow task");
+    };
+    let expected = serde_json::to_string(&read_snapshot_result(snapshot).await).unwrap();
+    let write_payload = ToolPayload::Function {
+        arguments: json!({
+            "runId": snapshot.run_id,
+            "writePath": "reports/result.json",
+        })
+        .to_string(),
+    };
+    let local_environment = local_workflow_execution_context(&fixture.config).tool_environments;
+    let Some(local_environment) = local_environment.into_iter().next() else {
+        panic!("expected a selected execution environment");
+    };
+    let executor = ReadWorkflowResultToolExecutor::new(fixture.thread_id, fixture.service.clone());
+    let output = executor
+        .handle(read_result_call(
+            Arc::new(EnvironmentEmitter::new(local_environment)),
+            write_payload.clone(),
+        ))
+        .await
+        .unwrap();
+    let result = output.code_mode_result(&write_payload);
+
+    assert_eq!(result["written"], json!(true));
+    assert_eq!(result["chunk"], json!(""));
+    assert_eq!(result["truncated"], json!(false));
+    assert_eq!(
+        result["sha256"],
+        json!(format!("{:x}", Sha256::digest(expected.as_bytes())))
+    );
+    assert!(!result.to_string().contains("xxxx"));
+    assert_eq!(
+        tokio::fs::read_to_string(fixture.config.cwd.join("reports/result.json"))
+            .await
+            .unwrap(),
+        expected
+    );
+}
+
+#[tokio::test]
+async fn read_workflow_result_can_return_and_write_a_json_pointer_projection() {
+    let fixture = ToolFixture::new(AskForApproval::Never).await;
+    let source = r#"export const meta = { name: 'projected-result', description: 'projected result' }; return { answer: { value: 'chosen' } };"#;
+    let payload = workflow_payload_with_source(source);
+    let invocation = workflow_call_with_payload(
+        Arc::new(ApprovalEmitter::new(ToolApprovalDecision::Approved)),
+        payload,
+    );
+    let input = serde_json::from_str(invocation.function_arguments().unwrap()).unwrap();
+    fixture
+        .executor
+        .handle_with_context(
+            invocation,
+            input,
+            local_workflow_execution_context(&fixture.config),
+        )
+        .await
+        .unwrap();
+    fixture.wait_for_terminal().await;
+    let snapshots = fixture.service.list(fixture.thread_id).await.unwrap();
+    let [snapshot] = snapshots.as_slice() else {
+        panic!("expected one workflow task");
+    };
+    let local_environment = local_workflow_execution_context(&fixture.config).tool_environments;
+    let Some(local_environment) = local_environment.into_iter().next() else {
+        panic!("expected a selected execution environment");
+    };
+    let executor = ReadWorkflowResultToolExecutor::new(fixture.thread_id, fixture.service.clone());
+    let projected_payload = ToolPayload::Function {
+        arguments: json!({
+            "runId": snapshot.run_id,
+            "jsonPointer": "/answer/value",
+        })
+        .to_string(),
+    };
+    let output = executor
+        .handle(read_result_call(
+            Arc::new(EnvironmentEmitter::new(local_environment.clone())),
+            projected_payload.clone(),
+        ))
+        .await
+        .unwrap();
+    let projected = output.code_mode_result(&projected_payload);
+
+    assert_eq!(projected["jsonPointer"], json!("/answer/value"));
+    assert_eq!(projected["value"], json!("chosen"));
+    assert_eq!(projected["chunk"], json!(""));
+    assert_eq!(projected["complete"], json!(true));
+    assert_eq!(projected["truncated"], json!(false));
+    let ToolSpec::Function(spec) = executor.spec() else {
+        panic!("ReadWorkflowResult should be a function tool");
+    };
+    let schema = spec
+        .output_schema
+        .expect("ReadWorkflowResult output schema");
+    let validator = jsonschema::validator_for(&schema).unwrap();
+    assert!(validator.is_valid(&projected));
+    assert!(
+        serde_json::to_vec(&projected).unwrap().len()
+            <= crate::workflow_result_tool::MODEL_TOOL_OUTPUT_MAX_BYTES
+    );
+
+    let write_payload = ToolPayload::Function {
+        arguments: json!({
+            "runId": snapshot.run_id,
+            "jsonPointer": "/answer/value",
+            "writePath": "reports/projected-result.json",
+        })
+        .to_string(),
+    };
+    let output = executor
+        .handle(read_result_call(
+            Arc::new(EnvironmentEmitter::new(local_environment)),
+            write_payload.clone(),
+        ))
+        .await
+        .unwrap();
+    let written = output.code_mode_result(&write_payload);
+
+    assert_eq!(written["written"], json!(true));
+    assert_eq!(written["jsonPointer"], json!("/answer/value"));
+    assert_eq!(written["totalBytes"], json!(r#""chosen""#.len() as u64));
+    assert!(validator.is_valid(&written));
+    assert!(
+        serde_json::to_vec(&written).unwrap().len()
+            <= crate::workflow_result_tool::MODEL_TOOL_OUTPUT_MAX_BYTES
+    );
+    assert_eq!(
+        written["sha256"],
+        json!(format!("{:x}", Sha256::digest(r#""chosen""#.as_bytes())))
+    );
+    assert_eq!(
+        tokio::fs::read_to_string(fixture.config.cwd.join("reports/projected-result.json"))
+            .await
+            .unwrap(),
+        r#""chosen""#
+    );
+}
+
+#[tokio::test]
+async fn wait_workflow_can_write_a_large_result_to_the_workspace() {
+    let fixture = ToolFixture::new(AskForApproval::Never).await;
+    let source = r#"export const meta = { name: 'wait-large-result', description: 'large result' }; return { value: 'y'.repeat(6_000) };"#;
+    let payload = workflow_payload_with_source(source);
+    let invocation = workflow_call_with_payload(
+        Arc::new(ApprovalEmitter::new(ToolApprovalDecision::Approved)),
+        payload,
+    );
+    let input = serde_json::from_str(invocation.function_arguments().unwrap()).unwrap();
+    fixture
+        .executor
+        .handle_with_context(
+            invocation,
+            input,
+            local_workflow_execution_context(&fixture.config),
+        )
+        .await
+        .unwrap();
+    fixture.wait_for_terminal().await;
+    let snapshots = fixture.service.list(fixture.thread_id).await.unwrap();
+    let [snapshot] = snapshots.as_slice() else {
+        panic!("expected one workflow task");
+    };
+    let expected = serde_json::to_string(&read_snapshot_result(snapshot).await).unwrap();
+    let wait_payload = ToolPayload::Function {
+        arguments: json!({
+            "runId": snapshot.run_id,
+            "timeoutMs": 1,
+            "writePath": "reports/wait-result.json",
+        })
+        .to_string(),
+    };
+    let local_environment = local_workflow_execution_context(&fixture.config).tool_environments;
+    let Some(local_environment) = local_environment.into_iter().next() else {
+        panic!("expected a selected execution environment");
+    };
+    let executor = crate::wait_tool::WaitWorkflowToolExecutor::new(
+        fixture.thread_id,
+        fixture.config.clone(),
+        fixture.service.clone(),
+    );
+    let output = executor
+        .handle(read_result_call_with_name(
+            Arc::new(EnvironmentEmitter::new(local_environment)),
+            wait_payload.clone(),
+            crate::wait_tool::WAIT_WORKFLOW_TOOL_NAME,
+        ))
+        .await
+        .unwrap();
+    let result = output.code_mode_result(&wait_payload);
+
+    assert_eq!(result["status"], json!("completed"));
+    assert_eq!(result["resultAvailable"], json!(true));
+    assert_eq!(result["resultWritten"], json!(true));
+    assert_eq!(result["resultInline"], json!(false));
+    assert_eq!(result["resultTruncated"], json!(false));
+    assert_eq!(result["resultPreview"], json!(null));
+    assert_eq!(
+        result["resultSha256"],
+        json!(format!("{:x}", Sha256::digest(expected.as_bytes())))
+    );
+    assert!(!result.to_string().contains("yyyy"));
+    assert_eq!(
+        tokio::fs::read_to_string(fixture.config.cwd.join("reports/wait-result.json"))
+            .await
+            .unwrap(),
+        expected
+    );
+}
+
+#[tokio::test]
+async fn wait_workflow_does_not_write_when_the_wait_times_out() {
+    let mut fixture = ToolFixture::new(AskForApproval::Never).await;
+    fixture.config.multi_agent_v2.min_wait_timeout_ms = 1;
+    fixture.config.multi_agent_v2.max_wait_timeout_ms = 1_000;
+    fixture.config.multi_agent_v2.default_wait_timeout_ms = 1;
+    let source = r#"export const meta = { name: 'slow-result', description: 'slow result' }; await new Promise((resolve) => setTimeout(resolve, 10_000)); return 'late';"#;
+    let payload = workflow_payload_with_source(source);
+    let invocation = workflow_call_with_payload(
+        Arc::new(ApprovalEmitter::new(ToolApprovalDecision::Approved)),
+        payload,
+    );
+    let input = serde_json::from_str(invocation.function_arguments().unwrap()).unwrap();
+    fixture
+        .executor
+        .handle_with_context(
+            invocation,
+            input,
+            local_workflow_execution_context(&fixture.config),
+        )
+        .await
+        .unwrap();
+    let snapshots = fixture.service.list(fixture.thread_id).await.unwrap();
+    let [snapshot] = snapshots.as_slice() else {
+        panic!("expected one workflow task");
+    };
+    let wait_payload = ToolPayload::Function {
+        arguments: json!({
+            "runId": snapshot.run_id,
+            "timeoutMs": 1,
+            "writePath": "reports/should-not-exist.json",
+        })
+        .to_string(),
+    };
+    let local_environment = local_workflow_execution_context(&fixture.config).tool_environments;
+    let Some(local_environment) = local_environment.into_iter().next() else {
+        panic!("expected a selected execution environment");
+    };
+    let executor = crate::wait_tool::WaitWorkflowToolExecutor::new(
+        fixture.thread_id,
+        fixture.config.clone(),
+        fixture.service.clone(),
+    );
+    let output = executor
+        .handle(read_result_call_with_name(
+            Arc::new(EnvironmentEmitter::new(local_environment)),
+            wait_payload.clone(),
+            crate::wait_tool::WAIT_WORKFLOW_TOOL_NAME,
+        ))
+        .await
+        .unwrap();
+    let result = output.code_mode_result(&wait_payload);
+
+    assert_eq!(result["status"], json!("running"));
+    assert_eq!(result["timedOut"], json!(true));
+    assert_eq!(result["resultAvailable"], json!(false));
+    assert_eq!(result["resultWritten"], json!(false));
+    assert!(
+        !fixture
+            .config
+            .cwd
+            .join("reports/should-not-exist.json")
+            .exists()
+    );
+}
+
+#[tokio::test]
+async fn resume_without_args_reuses_the_persisted_workflow_arguments() {
+    let fixture = ToolFixture::new(AskForApproval::Never).await;
+    let source =
+        r#"export const meta = { name: 'resume-args', description: 'resume args' }; return args;"#;
+    let first_payload = ToolPayload::Function {
+        arguments: json!({
+            "script": source,
+            "args": { "revision": 1 },
+        })
+        .to_string(),
+    };
+    let invocation = workflow_call_with_payload(
+        Arc::new(ApprovalEmitter::new(ToolApprovalDecision::Approved)),
+        first_payload,
+    );
+    let input = serde_json::from_str(invocation.function_arguments().unwrap()).unwrap();
+    fixture
+        .executor
+        .handle_with_context(
+            invocation,
+            input,
+            local_workflow_execution_context(&fixture.config),
+        )
+        .await
+        .unwrap();
+    fixture.wait_for_terminal().await;
+    let snapshots = fixture.service.list(fixture.thread_id).await.unwrap();
+    let [first] = snapshots.as_slice() else {
+        panic!("expected one workflow task");
+    };
+    assert_eq!(first.args, json!({ "revision": 1 }));
+
+    let resume_payload = ToolPayload::Function {
+        arguments: json!({
+            "script": source,
+            "resumeFromRunId": first.run_id,
+        })
+        .to_string(),
+    };
+    let invocation = workflow_call_with_payload(
+        Arc::new(ApprovalEmitter::new(ToolApprovalDecision::Approved)),
+        resume_payload,
+    );
+    let input = serde_json::from_str(invocation.function_arguments().unwrap()).unwrap();
+    fixture
+        .executor
+        .handle_with_context(
+            invocation,
+            input,
+            local_workflow_execution_context(&fixture.config),
+        )
+        .await
+        .unwrap();
+    fixture.wait_for_terminal().await;
+
+    let snapshots = fixture.service.list(fixture.thread_id).await.unwrap();
+    let [resumed] = snapshots.as_slice() else {
+        panic!("expected one workflow task");
+    };
+    assert_eq!(resumed.args, json!({ "revision": 1 }));
+    assert_eq!(
+        read_snapshot_result(resumed).await,
+        json!({ "revision": 1 })
+    );
+}
+
+#[tokio::test]
+async fn control_retry_reports_a_structured_reason_for_an_unknown_running_agent() {
+    let fixture = ToolFixture::new(AskForApproval::Never).await;
+    let source = r#"export const meta = { name: 'control-unknown', description: 'control unknown' }; return new Promise(() => {});"#;
+    let payload = workflow_payload_with_source(source);
+    let invocation = workflow_call_with_payload(
+        Arc::new(ApprovalEmitter::new(ToolApprovalDecision::Approved)),
+        payload,
+    );
+    let input = serde_json::from_str(invocation.function_arguments().unwrap()).unwrap();
+    fixture
+        .executor
+        .handle_with_context(
+            invocation,
+            input,
+            local_workflow_execution_context(&fixture.config),
+        )
+        .await
+        .unwrap();
+    let snapshots = fixture.service.list(fixture.thread_id).await.unwrap();
+    let [snapshot] = snapshots.as_slice() else {
+        panic!("expected one workflow task");
+    };
+    let control_payload = ToolPayload::Function {
+        arguments: json!({
+            "runId": snapshot.run_id,
+            "agentIndex": 42,
+        })
+        .to_string(),
+    };
+    let executor = crate::control_tool::WorkflowControlToolExecutor::retry_agent(
+        fixture.thread_id,
+        fixture.service.clone(),
+    );
+    let output = executor
+        .handle(read_result_call_with_name(
+            Arc::new(EnvironmentEmitter::new(
+                local_workflow_execution_context(&fixture.config)
+                    .tool_environments
+                    .into_iter()
+                    .next()
+                    .expect("selected environment"),
+            )),
+            control_payload.clone(),
+            crate::control_tool::RETRY_WORKFLOW_AGENT_TOOL_NAME,
+        ))
+        .await
+        .unwrap();
+    let result = output.code_mode_result(&control_payload);
+
+    assert_eq!(result["accepted"], json!(false));
+    assert_eq!(result["status"], json!("running"));
+    assert_eq!(result["reason"], json!("unknownAgent"));
+    assert_eq!(result["candidates"], json!([]));
+    assert_eq!(result["nextAction"], json!(null));
+}
+
+#[tokio::test]
+async fn control_retry_does_not_suggest_recovery_for_a_terminal_workflow() {
+    let fixture = ToolFixture::new(AskForApproval::Never).await;
+    let payload = workflow_payload_with_source(
+        "export const meta = { name: 'control-terminal', description: 'control terminal' }; return 'done'",
+    );
+    let invocation = workflow_call_with_payload(
+        Arc::new(ApprovalEmitter::new(ToolApprovalDecision::Approved)),
+        payload,
+    );
+    let input = serde_json::from_str(invocation.function_arguments().unwrap()).unwrap();
+    fixture
+        .executor
+        .handle_with_context(
+            invocation,
+            input,
+            local_workflow_execution_context(&fixture.config),
+        )
+        .await
+        .unwrap();
+    fixture.wait_for_terminal().await;
+    let snapshots = fixture.service.list(fixture.thread_id).await.unwrap();
+    let [snapshot] = snapshots.as_slice() else {
+        panic!("expected one workflow task");
+    };
+    let control_payload = ToolPayload::Function {
+        arguments: json!({
+            "runId": snapshot.run_id,
+            "agentIndex": 0,
+            "dryRun": true,
+        })
+        .to_string(),
+    };
+    let executor = crate::control_tool::WorkflowControlToolExecutor::retry_agent(
+        fixture.thread_id,
+        fixture.service.clone(),
+    );
+    let output = executor
+        .handle(read_result_call_with_name(
+            Arc::new(EnvironmentEmitter::new(
+                local_workflow_execution_context(&fixture.config)
+                    .tool_environments
+                    .into_iter()
+                    .next()
+                    .expect("selected environment"),
+            )),
+            control_payload.clone(),
+            crate::control_tool::RETRY_WORKFLOW_AGENT_TOOL_NAME,
+        ))
+        .await
+        .unwrap();
+    let result = output.code_mode_result(&control_payload);
+
+    assert_eq!(result["accepted"], json!(false));
+    assert_eq!(result["status"], json!("completed"));
+    assert_eq!(result["reason"], json!("terminalWorkflow"));
+    assert_eq!(result["candidates"], json!([]));
+    assert_eq!(result["nextAction"], json!(null));
 }
 
 #[tokio::test]
@@ -1524,6 +2013,59 @@ fn local_workflow_execution_context(
     }
 }
 
+fn read_result_call(emitter: Arc<dyn TurnItemEmitter>, payload: ToolPayload) -> ToolCall<'static> {
+    read_result_call_with_name(
+        emitter,
+        payload,
+        crate::workflow_result_tool::READ_WORKFLOW_RESULT_TOOL_NAME,
+    )
+}
+
+fn read_result_call_with_name(
+    emitter: Arc<dyn TurnItemEmitter>,
+    payload: ToolPayload,
+    tool_name: &str,
+) -> ToolCall<'static> {
+    ToolCall {
+        turn_id: "turn-read-result".to_string(),
+        call_id: "call-read-result".to_string(),
+        tool_name: ToolName::plain(tool_name),
+        model: "gpt-test".to_string(),
+        codex_turn_metadata: None,
+        truncation_policy: TruncationPolicy::Bytes(1024),
+        source: ToolCallSource::Direct,
+        conversation_history: ConversationHistory::default(),
+        turn_item_emitter: emitter,
+        environments: Vec::new(),
+        agent_configuration: None,
+        payload,
+    }
+}
+
+struct EnvironmentEmitter {
+    environment: ToolExecutionEnvironment,
+}
+
+impl EnvironmentEmitter {
+    fn new(environment: ToolExecutionEnvironment) -> Self {
+        Self { environment }
+    }
+}
+
+impl TurnItemEmitter for EnvironmentEmitter {
+    fn emit_started<'a>(&'a self, _item: ExtensionTurnItem) -> TurnItemEmissionFuture<'a> {
+        Box::pin(std::future::ready(()))
+    }
+
+    fn emit_completed<'a>(&'a self, _item: ExtensionTurnItem) -> TurnItemEmissionFuture<'a> {
+        Box::pin(std::future::ready(()))
+    }
+
+    fn execution_environments(&self) -> Vec<ToolExecutionEnvironment> {
+        vec![self.environment.clone()]
+    }
+}
+
 fn workflow_call(emitter: Arc<dyn TurnItemEmitter>) -> ToolCall<'static> {
     workflow_call_with_payload(emitter, workflow_payload())
 }
@@ -1757,13 +2299,44 @@ fn model_launch_response_preserves_preflighted_paths_and_identifiers() {
     assert_eq!(response["runId"], "wf_abc123");
     assert_eq!(response["taskId"], "w12345678");
     assert_eq!(response["transcriptDir"], launch.transcript_dir);
+    assert_eq!(
+        response["transcriptDirKind"],
+        json!("appServerHostArtifact")
+    );
     assert_eq!(response["scriptPath"], launch.script_path);
+    assert_eq!(response["scriptPathKind"], json!("appServerHostArtifact"));
     let error = model_bounded_json_value(WORKFLOW_TOOL_NAME, &response)
         .expect_err("oversized paths must be rejected during launch preflight");
     assert!(
         error
             .to_string()
             .contains("should return a focused response")
+    );
+}
+
+#[test]
+fn model_launch_response_matches_its_output_schema() {
+    let launch = WorkflowLaunch {
+        status: "async_launched".to_string(),
+        task_id: "w12345678".to_string(),
+        task_type: "local_workflow".to_string(),
+        workflow_name: "Path Review".to_string(),
+        run_id: "wf_abc123".to_string(),
+        summary: "Running workflow Path Review".to_string(),
+        transcript_dir: "/codex-home/transcripts/wf_abc123".to_string(),
+        script_path: "/codex-home/workflows/scripts/path-review-wf_abc123-w12345678.js".to_string(),
+    };
+    let response = model_launch_response(&launch);
+
+    let ToolSpec::Function(spec) = workflow_tool_spec(WORKFLOW_TOOL_NAME) else {
+        panic!("Workflow should be a function tool");
+    };
+    let schema = spec.output_schema.expect("Workflow output schema");
+    let validator = jsonschema::validator_for(&schema).unwrap();
+    assert!(validator.is_valid(&response));
+    assert!(
+        serde_json::to_vec(&response).unwrap().len()
+            <= crate::workflow_result_tool::MODEL_TOOL_OUTPUT_MAX_BYTES
     );
 }
 

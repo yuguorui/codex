@@ -18,7 +18,10 @@ mod service;
 mod spec;
 mod tool;
 mod wait_tool;
+mod workflow_recovery;
+mod workflow_result_projection;
 mod workflow_result_tool;
+mod workflow_result_write;
 mod workflow_status_tool;
 
 pub use control_tool::RETRY_WORKFLOW_AGENT_TOOL_NAME;

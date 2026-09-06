@@ -26,7 +26,7 @@ pub(crate) fn workflow_tool_spec(name: &str) -> ToolSpec {
             "args".to_string(),
             JsonSchema {
                 description: Some(
-                    "JSON value exposed verbatim as the workflow global `args`; pass structured JSON directly."
+                    "JSON value exposed verbatim as the workflow global `args`; pass structured JSON directly. Omit it for a new workflow to use null, or with resumeFromRunId to reuse that run's persisted arguments; explicit resume arguments replace them and disable journal replay."
                         .to_string(),
                 ),
                 ..Default::default()
@@ -67,8 +67,16 @@ pub(crate) fn workflow_tool_spec(name: &str) -> ToolSpec {
                 "workflowName": { "type": "string" },
                 "runId": { "type": "string" },
                 "summary": { "type": "string" },
-                "transcriptDir": { "type": "string" },
-                "scriptPath": { "type": "string" },
+                "transcriptDir": {
+                    "type": "string",
+                    "description": "App-server host artifact directory; it is not a path in the selected remote execution environment."
+                },
+                "transcriptDirKind": { "const": "appServerHostArtifact" },
+                "scriptPath": {
+                    "type": "string",
+                    "description": "Persisted app-server host copy of the approved workflow script; it is not a workspace path in the selected remote execution environment."
+                },
+                "scriptPathKind": { "const": "appServerHostArtifact" },
                 "sessionUrl": { "type": ["string", "null"] },
                 "warning": { "type": ["string", "null"] },
                 "error": { "type": ["string", "null"] }
@@ -81,7 +89,9 @@ pub(crate) fn workflow_tool_spec(name: &str) -> ToolSpec {
                 "runId",
                 "summary",
                 "transcriptDir",
-                "scriptPath"
+                "transcriptDirKind",
+                "scriptPath",
+                "scriptPathKind"
             ],
             "additionalProperties": false
         })),

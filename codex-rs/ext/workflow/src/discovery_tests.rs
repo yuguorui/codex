@@ -421,7 +421,7 @@ fn empty_input() -> WorkflowInput {
     WorkflowInput {
         script: None,
         name: None,
-        args: JsonValue::Null,
+        args: None,
         script_path: None,
         resume_from_run_id: None,
     }

@@ -2713,6 +2713,8 @@ async fn large_terminal_wait_output_reads_only_a_preview_page() {
         /*interrupted_by_user_input*/ false,
         Some(&chunk),
         /*result_error*/ None,
+        /*written_result*/ None,
+        /*write_error*/ None,
     )
     .unwrap();
 

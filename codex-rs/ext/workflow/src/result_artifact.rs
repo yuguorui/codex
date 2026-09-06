@@ -38,6 +38,10 @@ impl VerifiedWorkflowResult {
     pub(crate) fn artifact(&self) -> &WorkflowResultArtifact {
         &self.artifact
     }
+
+    pub(crate) fn serialized(&self) -> &str {
+        &self.serialized
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]

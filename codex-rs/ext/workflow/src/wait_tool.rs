@@ -24,15 +24,21 @@ use std::time::Duration;
 
 use crate::service::WorkflowService;
 use crate::service::WorkflowWaitOutcome;
+use crate::workflow_recovery::WorkflowRecoveryStatus;
+use crate::workflow_recovery::workflow_recovery_status;
 use crate::workflow_result_tool;
+use crate::workflow_result_tool::WAIT_MODEL_CONTEXT_COMPACT_BYTES;
 use crate::workflow_result_tool::WAIT_MODEL_CONTEXT_ITEM_MAX_BYTES;
 use crate::workflow_result_tool::WorkflowResultData;
 use crate::workflow_result_tool::model_bounded_error;
 use crate::workflow_result_tool::model_bounded_json_value_with_limit;
+use crate::workflow_result_write::WorkflowResultWrite;
+use crate::workflow_result_write::resolve_result_write_target;
+use crate::workflow_result_write::write_workflow_result;
 
 pub const WAIT_WORKFLOW_TOOL_NAME: &str = "WaitWorkflow";
 const WAIT_WORKFLOW_NAME_MAX_BYTES: usize = 64;
-const COMPACT_WAIT_TEXT_MAX_BYTES: usize = 32;
+const COMPACT_WAIT_TEXT_MAX_BYTES: usize = 8;
 
 #[derive(Clone)]
 pub(crate) struct WaitWorkflowToolExecutor {
@@ -107,30 +113,72 @@ impl<'call> ToolExecutor<ToolCall<'call>> for WaitWorkflowToolExecutor {
                         true,
                     ),
                 };
-            let (result_chunk, result_error) =
-                if workflow_result_tool::workflow_result_is_available(outcome.snapshot.status) {
-                    match self
+            let mut write_error = None;
+            let write_requested = args.write_path.is_some();
+            let written_result = if write_requested
+                && workflow_result_tool::workflow_result_is_writable(&outcome.snapshot)
+            {
+                let write_path = args.write_path.as_deref().expect("checked above");
+                match async {
+                    let verified = self
                         .service
-                        .read_result_chunk(
-                            self.thread_id,
-                            &outcome.snapshot,
-                            /*offset*/ 0,
-                            workflow_result_tool::RESULT_INLINE_MAX_BYTES,
-                        )
-                        .await
-                    {
-                        Ok(chunk) => (Some(chunk), None),
-                        Err(error) => (None, Some(error)),
+                        .load_result(self.thread_id, &outcome.snapshot)
+                        .await?;
+                    let target = resolve_result_write_target(
+                        &invocation.execution_environments(),
+                        write_path,
+                    )?;
+                    write_workflow_result(
+                        &target,
+                        verified.serialized(),
+                        &verified.artifact().sha256,
+                    )
+                    .await
+                }
+                .await
+                {
+                    Ok(write) => Some(write),
+                    Err(error) => {
+                        write_error = Some(error);
+                        None
                     }
-                } else {
-                    (None, None)
-                };
+                }
+            } else {
+                if write_requested
+                    && workflow_result_tool::workflow_result_is_available(outcome.snapshot.status)
+                {
+                    write_error =
+                        Some("terminal workflow snapshot has no result artifact".to_string());
+                }
+                None
+            };
+            let (result_chunk, result_error) = if !write_requested
+                && workflow_result_tool::workflow_result_is_available(outcome.snapshot.status)
+            {
+                match self
+                    .service
+                    .read_result_chunk(
+                        self.thread_id,
+                        &outcome.snapshot,
+                        /*offset*/ 0,
+                        workflow_result_tool::RESULT_INLINE_MAX_BYTES,
+                    )
+                    .await
+                {
+                    Ok(chunk) => (Some(chunk), None),
+                    Err(error) => (None, Some(error)),
+                }
+            } else {
+                (None, None)
+            };
             let output = WaitWorkflowOutput::from_outcome_with_result_chunk(
                 outcome,
                 timeout_ms,
                 interrupted_by_user_input,
                 result_chunk.as_ref(),
                 result_error.as_deref(),
+                written_result.as_ref(),
+                write_error.as_deref(),
             )
             .map_err(|error| {
                 model_bounded_error(format_args!(
@@ -152,6 +200,7 @@ impl<'call> ToolExecutor<ToolCall<'call>> for WaitWorkflowToolExecutor {
 struct WaitWorkflowArgs {
     run_id: String,
     timeout_ms: Option<i64>,
+    write_path: Option<String>,
 }
 
 fn parse_arguments(arguments: &str) -> Result<WaitWorkflowArgs, FunctionCallError> {
@@ -176,6 +225,7 @@ pub(super) struct WaitWorkflowOutput {
     timed_out: bool,
     interrupted_by_user_input: bool,
     timeout_ms: i64,
+    recovery: WorkflowRecoveryStatus,
     #[serde(flatten)]
     result_data: WorkflowResultData,
 }
@@ -193,6 +243,8 @@ impl WaitWorkflowOutput {
             interrupted_by_user_input,
             /*result_chunk*/ None,
             /*result_error*/ None,
+            /*written_result*/ None,
+            /*write_error*/ None,
         )
     }
 
@@ -202,10 +254,18 @@ impl WaitWorkflowOutput {
         interrupted_by_user_input: bool,
         result_chunk: Option<&crate::result_artifact::WorkflowResultChunk>,
         result_error: Option<&str>,
+        written_result: Option<&WorkflowResultWrite>,
+        write_error: Option<&str>,
     ) -> serde_json::Result<Self> {
         let snapshot = outcome.snapshot;
-        let result_data =
-            WorkflowResultData::from_snapshot_with_result(&snapshot, result_chunk, result_error)?;
+        let recovery = workflow_recovery_status(&snapshot);
+        let result_data = if let Some(write) = written_result {
+            WorkflowResultData::from_written_result(&snapshot, write)
+        } else if let Some(error) = write_error {
+            WorkflowResultData::from_write_error(&snapshot, error)
+        } else {
+            WorkflowResultData::from_snapshot_with_result(&snapshot, result_chunk, result_error)?
+        };
         let mut output = Self {
             run_id: snapshot.run_id,
             workflow_name: workflow_result_tool::truncate_model_text(
@@ -224,10 +284,12 @@ impl WaitWorkflowOutput {
             timed_out: outcome.timed_out && !interrupted_by_user_input,
             interrupted_by_user_input,
             timeout_ms,
+            recovery,
             result_data,
         };
-        if serde_json::to_vec(&output)?.len() > WAIT_MODEL_CONTEXT_ITEM_MAX_BYTES {
-            output.result_data.compact_for_wait(&output.run_id);
+        if serde_json::to_vec(&output)?.len() > WAIT_MODEL_CONTEXT_COMPACT_BYTES {
+            output.result_data.compact_for_wait();
+            output.recovery.compact_for_wait();
             output.workflow_name = workflow_result_tool::truncate_model_text(
                 &output.workflow_name,
                 COMPACT_WAIT_TEXT_MAX_BYTES,
@@ -290,10 +352,17 @@ fn wait_workflow_tool_spec(_config: &Config) -> ToolSpec {
                     .to_string(),
             )),
         ),
+        (
+            "writePath".to_string(),
+            JsonSchema::string(Some(
+                "Optional native path, relative to the primary selected execution environment cwd or absolute inside one of its workspace roots, where a terminal result should be written. The wait does not write before a result is available."
+                    .to_string(),
+            )),
+        ),
     ]);
     ToolSpec::Function(ResponsesApiTool {
         name: WAIT_WORKFLOW_TOOL_NAME.to_string(),
-        description: "Wait for one background workflow to reach a terminal status. The wait returns early for an already-terminal workflow and otherwise ends at completion, timeout, or new owning-turn user input. Repeated waits are safe. A focused terminal result is returned inline; use ReadWorkflowResult by runId when resultTruncated is true."
+        description: "Wait for one background workflow to reach a terminal status. The wait returns early for an already-terminal workflow and otherwise ends at completion, timeout, or new owning-turn user input. Repeated waits are safe. A focused terminal result is returned inline; use ReadWorkflowResult by runId when resultTruncated is true, or provide writePath to write and return only verified result metadata."
             .to_string(),
         strict: false,
         defer_loading: None,
@@ -341,6 +410,42 @@ fn wait_workflow_tool_spec(_config: &Config) -> ToolSpec {
                 "timedOut": { "type": "boolean" },
                 "interruptedByUserInput": { "type": "boolean" },
                 "timeoutMs": { "type": "integer", "minimum": 0 },
+                "recovery": {
+                    "type": "object",
+                    "description": "Recovery eligibility for this unfinished run. The resume target is this object's enclosing runId. A completed value is not presented as a recovery candidate even though Workflow may technically accept its runId for explicit replay.",
+                    "properties": {
+                        "recoveryEligible": { "type": "boolean" },
+                        "reason": {
+                            "enum": [
+                                "pending",
+                                "running",
+                                "completed",
+                                "paused",
+                                "failed",
+                                "killed"
+                            ]
+                        },
+                        "mayRequireReapproval": { "type": "boolean" },
+                        "identityRequirements": {
+                            "type": "array",
+                            "items": { "type": "string" },
+                            "description": "Approved identity fields that must match for journal replay; the compact form summarizes them as sameApprovedWorkflowIdentity."
+                        },
+                        "observedRestoreIncompatibilities": {
+                            "type": "array",
+                            "items": { "type": "string" },
+                            "description": "Identity fields named by restore errors already observed on this snapshot; absence does not guarantee a future resume will match."
+                        }
+                    },
+                    "required": [
+                        "recoveryEligible",
+                        "reason",
+                        "mayRequireReapproval",
+                        "identityRequirements",
+                        "observedRestoreIncompatibilities"
+                    ],
+                    "additionalProperties": false
+                },
                 "result": {},
                 "resultAvailable": { "type": "boolean" },
                 "resultInline": { "type": "boolean" },
@@ -348,6 +453,9 @@ fn wait_workflow_tool_spec(_config: &Config) -> ToolSpec {
                 "resultPreview": { "type": ["string", "null"] },
                 "resultBytes": { "type": ["integer", "null"], "minimum": 0 },
                 "resultError": { "type": ["string", "null"] },
+                "resultWritten": { "type": "boolean" },
+                "resultWritePath": { "type": ["string", "null"] },
+                "resultSha256": { "type": ["string", "null"] },
                 "nextAction": { "type": ["string", "null"] }
             },
             "required": [
@@ -362,6 +470,7 @@ fn wait_workflow_tool_spec(_config: &Config) -> ToolSpec {
                 "timedOut",
                 "interruptedByUserInput",
                 "timeoutMs",
+                "recovery",
                 "result",
                 "resultAvailable",
                 "resultInline",
@@ -369,6 +478,9 @@ fn wait_workflow_tool_spec(_config: &Config) -> ToolSpec {
                 "resultPreview",
                 "resultBytes",
                 "resultError",
+                "resultWritten",
+                "resultWritePath",
+                "resultSha256",
                 "nextAction"
             ],
             "additionalProperties": false

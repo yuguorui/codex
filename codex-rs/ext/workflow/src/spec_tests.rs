@@ -27,6 +27,21 @@ fn workflow_tool_text_keeps_core_contracts_focused() {
             .as_deref()
             .is_some_and(|description| description.contains("pass structured JSON directly"))
     );
+    let output_schema = spec.output_schema.expect("Workflow output schema");
+    assert_eq!(
+        output_schema["properties"]["transcriptDirKind"]["const"],
+        serde_json::json!("appServerHostArtifact")
+    );
+    assert_eq!(
+        output_schema["properties"]["scriptPathKind"]["const"],
+        serde_json::json!("appServerHostArtifact")
+    );
+    assert!(
+        output_schema["properties"]["scriptPath"]["description"]
+            .as_str()
+            .is_some_and(|description| description.contains("not a workspace path"))
+    );
+    assert!(spec.description.contains("app-server host artifact paths"));
     for text in [
         spec.description.as_str(),
         properties["script"]

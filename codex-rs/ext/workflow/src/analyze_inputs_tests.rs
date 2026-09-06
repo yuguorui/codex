@@ -15,6 +15,7 @@ use codex_workflow::MemoryWorkflowInputArtifactStore;
 use codex_workflow::WorkflowAgentInputs;
 use codex_workflow::WorkflowInputArtifactStore;
 use pretty_assertions::assert_eq;
+use serde_json::Value as JsonValue;
 use serde_json::json;
 use tokio::sync::Notify;
 use tokio::sync::OwnedSemaphorePermit;
@@ -22,6 +23,7 @@ use tokio::sync::OwnedSemaphorePermit;
 use super::ANALYSIS_ISOLATE_ADMISSION;
 use super::ANALYSIS_MATERIALIZATION_ADMISSION;
 use super::ANALYZE_WORKFLOW_INPUTS_TOOL_NAME;
+use super::AnalysisOutput;
 use super::AnalyzeWorkflowInputsToolExecutor;
 use super::MAX_ANALYSIS_LOG_ARGUMENTS;
 use super::MAX_ANALYSIS_LOG_BYTES;
@@ -30,8 +32,11 @@ use super::MAX_CONCURRENT_ANALYSIS_ISOLATES;
 use super::MAX_CONCURRENT_INPUT_MATERIALIZATIONS;
 use super::MAX_MODEL_ERROR_BYTES;
 use super::WorkflowInputsCapability;
+use super::analysis_overflow_value;
+use super::analysis_shape;
 use super::analyze_capability_inputs;
 use super::analyze_inputs;
+use super::analyze_workflow_inputs_spec;
 use super::run_analysis_isolate;
 use super::shared_analysis_inputs;
 
@@ -1123,6 +1128,101 @@ async fn complete_tool_envelope_obeys_the_model_output_bound() {
     let envelope = serde_json::to_vec(&output.code_mode_result(&payload)).unwrap();
 
     assert!(envelope.len() <= MAX_ANALYSIS_OUTPUT_BYTES);
+    validate_analysis_output_schema(&output.code_mode_result(&payload));
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn oversized_analysis_returns_a_bounded_shape_instead_of_a_generic_error() {
+    let _admission_test = ADMISSION_TEST_LOCK.lock().await;
+    let capability = Arc::new(
+        inputs_capability(BTreeMap::from([
+            (
+                "repos".to_string(),
+                json!(
+                    (0..24)
+                        .map(|index| format!("repository-{index}"))
+                        .collect::<Vec<_>>()
+                ),
+            ),
+            (
+                "report".to_string(),
+                json!({
+                    "findings": ["x".repeat(512)],
+                    "summary": "large",
+                }),
+            ),
+        ]))
+        .await,
+    );
+    let executor = AnalyzeWorkflowInputsToolExecutor::new(capability);
+    let call = analysis_call("return inputs;");
+    let payload = call.payload.clone();
+    let output = executor.handle(call).await.unwrap();
+    let value = output.code_mode_result(&payload);
+
+    assert_eq!(value["error"]["kind"], json!("outputTooLarge"));
+    assert_eq!(value["error"]["maxBytes"], json!(MAX_ANALYSIS_OUTPUT_BYTES));
+    assert_eq!(value["resultShape"]["kind"], json!("object"));
+    assert_eq!(value["resultShape"]["keyCount"], json!(2));
+    assert_eq!(value["logsOmitted"], json!(true));
+    assert_eq!(value["logsTruncated"], json!(false));
+    assert!(value["nextAction"].as_str().is_some_and(|action| {
+        action.contains("resultShape") && action.contains("separate calls")
+    }));
+    assert!(serde_json::to_vec(&value).unwrap().len() <= MAX_ANALYSIS_OUTPUT_BYTES);
+    validate_analysis_output_schema(&value);
+}
+
+#[test]
+fn oversized_analysis_shape_compacts_before_returning() {
+    let mut items = Vec::new();
+    for item_index in 0..4 {
+        let mut values = serde_json::Map::new();
+        for key_index in 0..6 {
+            values.insert(format!("long-key-{item_index}-{key_index}"), json!("value"));
+        }
+        items.push(JsonValue::Object(values));
+    }
+    let output = AnalysisOutput {
+        result: JsonValue::Array(items),
+        logs: Vec::new(),
+        logs_truncated: false,
+    };
+    let value = analysis_overflow_value(&output).unwrap();
+
+    assert_eq!(value["resultShape"]["kind"], json!("array"));
+    assert_eq!(value["resultShape"]["count"], json!(4));
+    assert!(value.get("itemShapes").is_none());
+    assert!(serde_json::to_vec(&value).unwrap().len() <= MAX_ANALYSIS_OUTPUT_BYTES);
+    validate_analysis_output_schema(&value);
+}
+
+#[test]
+fn oversized_analysis_shape_marks_truncated_key_names() {
+    let name = "k".repeat(64);
+    let mut values = serde_json::Map::new();
+    values.insert(name, json!("value"));
+    let shape = analysis_shape(&JsonValue::Object(values));
+
+    let keys = shape["keys"].as_array().unwrap();
+    assert_eq!(keys[0]["nameBytes"], json!(64));
+    assert_eq!(keys[0]["nameTruncated"], json!(true));
+    assert_ne!(keys[0]["name"].as_str().unwrap().len(), 64);
+}
+
+#[test]
+fn oversized_analysis_omits_large_logs_entirely() {
+    let output = AnalysisOutput {
+        result: json!("x".repeat(4_096)),
+        logs: vec!["log".repeat(256)],
+        logs_truncated: true,
+    };
+    let value = analysis_overflow_value(&output).unwrap();
+
+    assert!(value.get("logs").is_none());
+    assert_eq!(value["logsOmitted"], json!(true));
+    assert_eq!(value["logsTruncated"], json!(true));
+    validate_analysis_output_schema(&value);
 }
 
 #[test]
@@ -1144,4 +1244,14 @@ fn tool_spec_is_static_for_computed_and_hostile_aliases() {
         panic!("AnalyzeWorkflowInputs should use a function tool spec");
     };
     assert!(spec.description.contains("Object.keys(globalThis.inputs)"));
+    assert!(spec.output_schema.is_some());
+}
+
+fn validate_analysis_output_schema(value: &JsonValue) {
+    let ToolSpec::Function(spec) = analyze_workflow_inputs_spec() else {
+        panic!("AnalyzeWorkflowInputs should use a function tool spec");
+    };
+    let schema = spec.output_schema.expect("analysis output schema");
+    let validator = jsonschema::validator_for(&schema).unwrap();
+    assert!(validator.is_valid(value));
 }

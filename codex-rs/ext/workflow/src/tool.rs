@@ -262,12 +262,13 @@ impl WorkflowToolExecutor {
             script_access,
         } = context;
         validate_script_access(&input, script_access)?;
+        let restore_resume_args = input.resume_from_run_id.is_some() && input.args.is_none();
         let plugin_roots = active_plugin_workflow_roots(&self.thread_manager, &config).await;
         let child_policy = match location {
             WorkflowEnvironmentLocation::Local => ChildWorkflowPolicy::FreezeLocal,
             WorkflowEnvironmentLocation::Remote => ChildWorkflowPolicy::RejectRemote,
         };
-        let resolved = resolve_workflow(
+        let mut resolved = resolve_workflow(
             input,
             &config.cwd,
             &config.codex_home,
@@ -276,6 +277,13 @@ impl WorkflowToolExecutor {
         )
         .await
         .map_err(model_bounded_error)?;
+        if restore_resume_args && let Some(run_id) = resolved.resume_from_run_id.as_deref() {
+            resolved.args = self
+                .service
+                .resume_args(self.thread_id, run_id)
+                .await
+                .map_err(model_bounded_error)?;
+        }
         let declared_patterns = resolved
             .script
             .meta
@@ -513,7 +521,7 @@ impl WorkflowToolExecutor {
             })
             .await
             .map_err(model_bounded_error)?;
-        let value = model_launch_response(&launch);
+        let value = model_bounded_json_value(WORKFLOW_TOOL_NAME, &model_launch_response(&launch))?;
         Ok(Box::new(JsonToolOutput::new(value)) as Box<dyn ToolOutput>)
     }
 }
@@ -805,7 +813,7 @@ fn preflight_model_launch_response(
     let session_dir = workflow_session_dir(&config.codex_home, thread_id);
     let transcript_dir = session_dir
         .join("subagents/workflows")
-        .join(run_id)
+        .join(format!("{run_id}-{GENERATED_WORKFLOW_TASK_ID}"))
         .display()
         .to_string();
     let slug = workflow_name
@@ -821,7 +829,7 @@ fn preflight_model_launch_response(
     let slug = slug.trim_matches('-');
     let script_path = session_dir
         .join("workflows/scripts")
-        .join(format!("{slug}-{run_id}.js"))
+        .join(format!("{slug}-{run_id}-{GENERATED_WORKFLOW_TASK_ID}.js"))
         .display()
         .to_string();
     let preview = WorkflowLaunch {
@@ -846,7 +854,9 @@ fn model_launch_response(launch: &WorkflowLaunch) -> serde_json::Value {
         "runId": launch.run_id,
         "summary": launch.summary,
         "transcriptDir": launch.transcript_dir,
+        "transcriptDirKind": "appServerHostArtifact",
         "scriptPath": launch.script_path,
+        "scriptPathKind": "appServerHostArtifact",
     })
 }
 

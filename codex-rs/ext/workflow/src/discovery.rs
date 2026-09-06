@@ -29,7 +29,7 @@ pub(crate) struct WorkflowInput {
     #[serde(default)]
     pub name: Option<String>,
     #[serde(default)]
-    pub args: JsonValue,
+    pub args: Option<JsonValue>,
     #[serde(default)]
     pub script_path: Option<String>,
     #[serde(default)]
@@ -214,7 +214,7 @@ pub(crate) async fn resolve_workflow(
             .map_err(WorkflowResolveError::ChildComposition)?;
     Ok(ResolvedWorkflow {
         script,
-        args: input.args,
+        args: input.args.unwrap_or(JsonValue::Null),
         resume_from_run_id: input.resume_from_run_id,
         origin,
         shadows_existing,

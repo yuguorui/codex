@@ -14,6 +14,7 @@ use codex_protocol::models::ResponseInputItem;
 use codex_protocol::workflow::WorkflowUsage;
 use codex_utils_absolute_path::AbsolutePathBuf;
 use codex_utils_output_truncation::TruncationPolicy;
+use codex_utils_path_uri::PathUri;
 use pretty_assertions::assert_eq;
 use serde_json::json;
 use std::sync::Arc;
@@ -51,10 +52,13 @@ fn larger_result_preview_guides_paged_reading() {
     assert!(data.result_available);
     assert!(!data.result_inline);
     assert!(data.result_truncated);
+    assert!(data.result_preview.as_deref().is_some_and(|preview| {
+        preview.contains("page with ReadWorkflowResult starting at offset 0")
+    }));
     assert!(
         data.result_preview
             .as_deref()
-            .is_some_and(|preview| preview.contains("use ReadWorkflowResult starting at offset 0"))
+            .is_some_and(|preview| preview.contains("pass writePath"))
     );
 }
 
@@ -156,6 +160,111 @@ fn escaped_page_stays_bounded_in_the_model_response_item() {
 }
 
 #[test]
+fn written_result_reports_metadata_without_inlining_content() {
+    let snapshot = snapshot(WorkflowTaskStatus::Completed, /*result_bytes*/ 12);
+    let root = PathUri::from_abs_path(&AbsolutePathBuf::try_from(std::env::temp_dir()).unwrap());
+    let write = WorkflowResultWrite {
+        path: root.join("reports/result.json").unwrap(),
+        bytes: 12,
+        sha256: "0".repeat(64),
+    };
+
+    let output = ReadWorkflowResultOutput::from_write(&snapshot, write, None).unwrap();
+
+    assert_eq!(
+        output,
+        ReadWorkflowResultOutput {
+            run_id: snapshot.run_id.clone(),
+            status: snapshot.status,
+            available: true,
+            encoding: "json",
+            chunk: String::new(),
+            offset: 0,
+            next_offset: 12,
+            total_bytes: 12,
+            complete: true,
+            truncated: false,
+            written: true,
+            write_path: Some(
+                root.join("reports/result.json")
+                    .unwrap()
+                    .inferred_native_path_string(),
+            ),
+            json_pointer: None,
+            value: None,
+            sha256: Some("0".repeat(64)),
+            next_action: None,
+        }
+    );
+}
+
+#[test]
+fn projected_result_returns_the_selected_value_and_its_digest() {
+    let snapshot = snapshot(WorkflowTaskStatus::Completed, /*result_bytes*/ 10);
+    let projected = crate::workflow_result_projection::project_workflow_result(
+        r#"{"answer":{"value":"chosen"}}"#,
+        "/answer/value",
+    )
+    .unwrap();
+    let output = ReadWorkflowResultOutput::from_projection(
+        &snapshot, &projected, /*include_value*/ true,
+    );
+
+    assert_eq!(output.json_pointer.as_deref(), Some("/answer/value"));
+    assert_eq!(output.value.as_ref(), Some(&json!("chosen")));
+    assert_eq!(output.chunk, "");
+    assert_eq!(output.total_bytes, "\"chosen\"".len() as u64);
+    assert_eq!(output.complete, true);
+    assert_eq!(output.truncated, false);
+    assert_eq!(output.sha256.as_deref(), Some(projected.sha256.as_str()));
+}
+
+#[test]
+fn maximum_length_projection_pointer_stays_within_the_output_schema() {
+    let snapshot = snapshot(WorkflowTaskStatus::Completed, /*result_bytes*/ 10);
+    let key = "k".repeat(511);
+    let projected = crate::workflow_result_projection::project_workflow_result(
+        &format!("{{\"{key}\":\"chosen\"}}"),
+        &format!("/{key}"),
+    )
+    .unwrap();
+    let output = ReadWorkflowResultOutput::from_projected_result(&snapshot, &projected).unwrap();
+
+    assert_eq!(
+        output.json_pointer.as_deref(),
+        Some(format!("/{key}").as_str())
+    );
+    assert_eq!(output.value.as_ref(), Some(&json!("chosen")));
+    assert!(
+        serde_json::to_vec(&output).unwrap().len()
+            <= crate::workflow_result_tool::MODEL_TOOL_OUTPUT_MAX_BYTES
+    );
+    validate_read_result_output_schema(&output);
+}
+
+#[test]
+fn oversized_projection_returns_metadata_and_a_write_next_action() {
+    let snapshot = snapshot(WorkflowTaskStatus::Completed, /*result_bytes*/ 10);
+    let projected = crate::workflow_result_projection::project_workflow_result(
+        &serde_json::to_string(&json!({"value": "x".repeat(4_000)})).unwrap(),
+        "/value",
+    )
+    .unwrap();
+    let output = ReadWorkflowResultOutput::from_projected_result(&snapshot, &projected).unwrap();
+
+    assert_eq!(output.value, None);
+    assert_eq!(output.truncated, true);
+    assert!(output.next_action.as_deref().is_some_and(|action| {
+        action.contains("same jsonPointer") && action.contains("writePath")
+    }));
+    assert!(
+        serde_json::to_vec(&output).unwrap().len()
+            <= crate::workflow_result_tool::MODEL_TOOL_OUTPUT_MAX_BYTES
+    );
+    validate_read_result_output_schema(&output);
+}
+
+#[test]
 fn hard_text_bound_preserves_utf8_boundaries() {
     let value = "你好世界".repeat(100);
 
@@ -186,6 +295,12 @@ fn running_and_paused_results_are_unavailable() {
                 total_bytes: 0,
                 complete: false,
                 truncated: false,
+                written: false,
+                write_path: None,
+                json_pointer: None,
+                value: None,
+                sha256: None,
+                next_action: None,
             }
         );
         assert_eq!(
@@ -198,6 +313,9 @@ fn running_and_paused_results_are_unavailable() {
                 result_preview: None,
                 result_bytes: None,
                 result_error: None,
+                result_written: false,
+                result_write_path: None,
+                result_sha256: None,
                 next_action: None,
             }
         );
@@ -226,6 +344,20 @@ fn spec_exposes_optional_max_bytes_and_incomplete_continuation() {
     assert_eq!(spec.name, READ_WORKFLOW_RESULT_TOOL_NAME);
     assert_eq!(spec.parameters.required, Some(vec!["runId".to_string()]));
     assert!(properties.contains_key("maxBytes"));
+    assert!(properties.contains_key("writePath"));
+    assert!(properties.contains_key("jsonPointer"));
+    assert!(
+        properties["writePath"]
+            .description
+            .as_deref()
+            .is_some_and(|description| description.contains("selected execution environment"))
+    );
+    assert!(
+        properties["jsonPointer"]
+            .description
+            .as_deref()
+            .is_some_and(|description| description.contains("RFC 6901"))
+    );
     assert!(
         properties["offset"]
             .description
@@ -234,6 +366,10 @@ fn spec_exposes_optional_max_bytes_and_incomplete_continuation() {
     );
     assert!(spec.description.contains("choose maxBytes"));
     assert!(spec.description.contains("only while complete is false"));
+    assert!(
+        spec.description
+            .contains("project one value with RFC 6901 jsonPointer")
+    );
 }
 
 #[tokio::test]
@@ -297,6 +433,14 @@ async fn invalid_arguments_emit_a_failed_lifecycle_with_available_identity() {
             json!({"runId": "wf_invalid", "maxBytes": 0}).to_string(),
             Some("wf_invalid"),
         ),
+        (
+            json!({"runId": "wf_invalid", "writePath": "result.json", "offset": 0}).to_string(),
+            Some("wf_invalid"),
+        ),
+        (
+            json!({"runId": "wf_invalid", "jsonPointer": "/answer", "offset": 0}).to_string(),
+            Some("wf_invalid"),
+        ),
     ];
     for (index, (arguments, run_id)) in invalid_arguments.into_iter().enumerate() {
         let call_id = format!("call-invalid-{index}");
@@ -350,6 +494,17 @@ impl TurnItemEmitter for RecordingEmitter {
         self.items.lock().unwrap().push(item.item);
         Box::pin(std::future::ready(()))
     }
+}
+
+fn validate_read_result_output_schema(output: &ReadWorkflowResultOutput) {
+    let ToolSpec::Function(spec) = read_workflow_result_tool_spec() else {
+        panic!("ReadWorkflowResult should be a function tool");
+    };
+    let schema = spec
+        .output_schema
+        .expect("ReadWorkflowResult output schema");
+    let validator = jsonschema::validator_for(&schema).unwrap();
+    assert!(validator.is_valid(&serde_json::to_value(output).unwrap()));
 }
 
 fn complete_chunk(serialized: &str) -> WorkflowResultChunk {

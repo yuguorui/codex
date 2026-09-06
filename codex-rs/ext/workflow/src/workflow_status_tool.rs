@@ -27,6 +27,8 @@ use crate::service::WorkflowTaskSnapshot;
 use crate::service::WorkflowWaitOutcome;
 use crate::wait_tool::InterruptibleWait;
 use crate::wait_tool::race_with_turn_activity;
+use crate::workflow_recovery::WorkflowRecoverySummary;
+use crate::workflow_recovery::workflow_recovery_status;
 use crate::workflow_result_tool::MODEL_TOOL_OUTPUT_MAX_BYTES;
 use crate::workflow_result_tool::model_bounded_error;
 use crate::workflow_result_tool::model_bounded_json_value;
@@ -40,7 +42,17 @@ const DEFAULT_LIST_LIMIT: usize = 20;
 const DEFAULT_AGENT_LIST_LIMIT: usize = 8;
 const MAX_AGENT_LIST_LIMIT: usize = 16;
 const MAX_WORKFLOW_COLLECTION_ITEMS: usize = 32;
+const MAX_WAIT_WORKFLOW_ITEMS: usize = 8;
+const MAX_WAIT_WORKFLOW_ID_BYTES: usize = 128;
 const MAX_STATUS_FILTER_ITEMS: usize = 6;
+const WORKFLOW_STATUSES: [WorkflowTaskStatus; 6] = [
+    WorkflowTaskStatus::Pending,
+    WorkflowTaskStatus::Running,
+    WorkflowTaskStatus::Completed,
+    WorkflowTaskStatus::Failed,
+    WorkflowTaskStatus::Paused,
+    WorkflowTaskStatus::Killed,
+];
 const STATUS_NAME_MAX_BYTES: usize = 96;
 const STATUS_TITLE_MAX_BYTES: usize = 128;
 const STATUS_TEXT_MAX_BYTES: usize = 160;
@@ -86,7 +98,7 @@ impl<'call> ToolExecutor<ToolCall<'call>> for ListWorkflowsToolExecutor {
                     "provide a positive limit or omit it to use the server-sized list page",
                 ));
             }
-            let statuses = args.statuses.clone().unwrap_or_default();
+            let statuses = canonical_statuses(&args.statuses.clone().unwrap_or_default());
             if statuses.len() > MAX_STATUS_FILTER_ITEMS {
                 return Err(model_bounded_error(
                     "use a focused status filter or omit it to include every workflow status",
@@ -98,6 +110,14 @@ impl<'call> ToolExecutor<ToolCall<'call>> for ListWorkflowsToolExecutor {
                 .map(decode_list_cursor)
                 .transpose()
                 .map_err(model_bounded_error)?;
+            if let Some(cursor) = cursor.as_ref()
+                && let Some(cursor_statuses) = &cursor.statuses
+                && cursor_statuses != &statuses
+            {
+                return Err(model_bounded_error(
+                    "list cursor belongs to a different statuses filter",
+                ));
+            }
             let page = self
                 .service
                 .list_page(
@@ -108,7 +128,8 @@ impl<'call> ToolExecutor<ToolCall<'call>> for ListWorkflowsToolExecutor {
                 )
                 .await
                 .map_err(model_bounded_error)?;
-            let output = list_workflows_page_output(page).map_err(model_bounded_error)?;
+            let output =
+                list_workflows_page_output(page, &statuses).map_err(model_bounded_error)?;
             let value = model_bounded_json_value(LIST_WORKFLOWS_TOOL_NAME, &output)?;
             Ok(Box::new(JsonToolOutput::new(value)) as Box<dyn ToolOutput>)
         })
@@ -207,7 +228,7 @@ impl<'call> ToolExecutor<ToolCall<'call>> for WaitWorkflowsToolExecutor {
     }
 
     fn spec(&self) -> ToolSpec {
-        wait_workflows_tool_spec(&self.config)
+        wait_workflows_tool_spec()
     }
 
     fn availability(&self) -> ToolAvailability {
@@ -343,6 +364,8 @@ struct ListWorkflowsOutput {
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct WorkflowListCursor {
     sequence: u64,
+    #[serde(default)]
+    statuses: Option<Vec<WorkflowTaskStatus>>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -387,6 +410,9 @@ struct WaitedWorkflowStatus {
     status: WorkflowTaskStatus,
     timed_out: bool,
     result_available: bool,
+    result_bytes: Option<u64>,
+    result_sha256: Option<String>,
+    recovery: Option<WorkflowRecoverySummary>,
 }
 
 #[derive(Clone, Debug, Serialize, PartialEq, Eq)]
@@ -403,6 +429,8 @@ struct WorkflowStatusItem {
     started_at: i64,
     completed_at: Option<i64>,
     result_available: bool,
+    result_bytes: Option<u64>,
+    result_sha256: Option<String>,
 }
 
 impl WorkflowStatusItem {
@@ -421,7 +449,16 @@ impl WorkflowStatusItem {
             usage: snapshot.usage.clone(),
             started_at: snapshot.started_at,
             completed_at: snapshot.completed_at,
-            result_available: workflow_result_is_available(snapshot.status),
+            result_available: workflow_result_is_available(snapshot.status)
+                && snapshot.result_artifact.is_some(),
+            result_bytes: snapshot
+                .result_artifact
+                .as_ref()
+                .map(|artifact| artifact.bytes),
+            result_sha256: snapshot
+                .result_artifact
+                .as_ref()
+                .map(|artifact| artifact.sha256.clone()),
         }
     }
 }
@@ -437,13 +474,19 @@ fn list_workflows_output(
             "provide a positive limit or omit it to use the server-sized list page".to_string(),
         );
     }
-    let statuses = args.statuses.unwrap_or_default();
+    let statuses = canonical_statuses(&args.statuses.unwrap_or_default());
     if statuses.len() > MAX_STATUS_FILTER_ITEMS {
         return Err(
             "use a focused status filter or omit it to include every workflow status".to_string(),
         );
     }
     let cursor = args.cursor.as_deref().map(decode_list_cursor).transpose()?;
+    if let Some(cursor) = cursor.as_ref()
+        && let Some(cursor_statuses) = &cursor.statuses
+        && cursor_statuses != &statuses
+    {
+        return Err("list cursor belongs to a different statuses filter".to_string());
+    }
     let mut matching = snapshots
         .into_iter()
         .filter(|snapshot| statuses.is_empty() || statuses.contains(&snapshot.status))
@@ -471,6 +514,7 @@ fn list_workflows_output(
         let next_cursor = encode_list_cursor(
             u64::try_from(start.saturating_sub(workflows.len()))
                 .map_err(|error| error.to_string())?,
+            &statuses,
         )?;
         let candidate = ListWorkflowsOutput {
             workflows: workflows.clone(),
@@ -490,7 +534,7 @@ fn list_workflows_output(
     let next_cursor = (remaining > 0)
         .then(|| u64::try_from(remaining).ok())
         .flatten()
-        .and_then(|sequence| encode_list_cursor(sequence).ok());
+        .and_then(|sequence| encode_list_cursor(sequence, &statuses).ok());
     Ok(ListWorkflowsOutput {
         truncated: next_cursor.is_some(),
         workflows,
@@ -501,6 +545,7 @@ fn list_workflows_output(
 
 fn list_workflows_page_output(
     page: crate::service::WorkflowListPage,
+    statuses: &[WorkflowTaskStatus],
 ) -> Result<ListWorkflowsOutput, String> {
     let mut workflows = Vec::new();
     let mut size_truncated = false;
@@ -512,7 +557,7 @@ fn list_workflows_page_output(
             workflows: workflows.clone(),
             total_matched: page.total_matched,
             truncated: true,
-            next_cursor: encode_list_cursor(*sequence).ok(),
+            next_cursor: encode_list_cursor(*sequence, statuses).ok(),
         };
         if serde_json::to_vec(&candidate)
             .map_err(|error| format!("failed to measure ListWorkflows output: {error}"))?
@@ -530,10 +575,10 @@ fn list_workflows_page_output(
         }
     }
     let next_cursor = if size_truncated {
-        last_sequence.and_then(|sequence| encode_list_cursor(sequence).ok())
+        last_sequence.and_then(|sequence| encode_list_cursor(sequence, statuses).ok())
     } else {
         page.next_sequence
-            .and_then(|sequence| encode_list_cursor(sequence).ok())
+            .and_then(|sequence| encode_list_cursor(sequence, statuses).ok())
     };
     Ok(ListWorkflowsOutput {
         workflows,
@@ -543,9 +588,12 @@ fn list_workflows_page_output(
     })
 }
 
-fn encode_list_cursor(sequence: u64) -> Result<String, String> {
-    serde_json::to_string(&WorkflowListCursor { sequence })
-        .map_err(|error| format!("failed to encode workflow list cursor: {error}"))
+fn encode_list_cursor(sequence: u64, statuses: &[WorkflowTaskStatus]) -> Result<String, String> {
+    serde_json::to_string(&WorkflowListCursor {
+        sequence,
+        statuses: Some(statuses.to_vec()),
+    })
+    .map_err(|error| format!("failed to encode workflow list cursor: {error}"))
 }
 
 fn decode_list_cursor(cursor: &str) -> Result<WorkflowListCursor, String> {
@@ -637,25 +685,52 @@ fn wait_workflows_output(
         timeout_ms,
         workflows: outcomes
             .into_iter()
-            .map(|outcome| WaitedWorkflowStatus {
-                run_id: outcome.snapshot.run_id,
-                status: outcome.snapshot.status,
-                timed_out: outcome.timed_out && !interrupted_by_user_input,
-                result_available: workflow_result_is_available(outcome.snapshot.status),
+            .map(|outcome| {
+                let can_resume = matches!(
+                    outcome.snapshot.status,
+                    WorkflowTaskStatus::Paused
+                        | WorkflowTaskStatus::Failed
+                        | WorkflowTaskStatus::Killed
+                );
+                let recovery =
+                    can_resume.then(|| workflow_recovery_status(&outcome.snapshot).into_summary());
+                WaitedWorkflowStatus {
+                    run_id: outcome.snapshot.run_id,
+                    status: outcome.snapshot.status,
+                    timed_out: outcome.timed_out && !interrupted_by_user_input,
+                    result_available: workflow_result_is_available(outcome.snapshot.status)
+                        && outcome.snapshot.result_artifact.is_some(),
+                    result_bytes: outcome
+                        .snapshot
+                        .result_artifact
+                        .as_ref()
+                        .map(|artifact| artifact.bytes),
+                    result_sha256: outcome
+                        .snapshot
+                        .result_artifact
+                        .as_ref()
+                        .map(|artifact| artifact.sha256.clone()),
+                    recovery,
+                }
             })
             .collect(),
     }
 }
 
 fn validate_run_ids(run_ids: &[String]) -> Result<(), String> {
-    if run_ids.is_empty() || run_ids.len() > MAX_WORKFLOW_COLLECTION_ITEMS {
+    if run_ids.is_empty() || run_ids.len() > MAX_WAIT_WORKFLOW_ITEMS {
         return Err(
             "provide a focused, non-empty set of runIds; split larger sets across additional WaitWorkflows calls"
                 .to_string(),
         );
     }
-    if run_ids.iter().any(String::is_empty) {
-        return Err("provide a workflow run id for every runIds entry".to_string());
+    if run_ids
+        .iter()
+        .any(|run_id| run_id.is_empty() || run_id.len() > MAX_WAIT_WORKFLOW_ID_BYTES)
+    {
+        return Err(format!(
+            "provide each workflow run id as 1..={MAX_WAIT_WORKFLOW_ID_BYTES} UTF-8 bytes"
+        ));
     }
     let unique = run_ids.iter().collect::<BTreeSet<_>>();
     if unique.len() != run_ids.len() {
@@ -696,7 +771,7 @@ fn list_workflows_tool_spec() -> ToolSpec {
         (
             "cursor".to_string(),
             JsonSchema::string(Some(
-                "Continuation token returned by an earlier ListWorkflows call using the same filters."
+                "Continuation token returned by an earlier ListWorkflows call using the same statuses filter; new cursors embed that filter and reject a mismatch."
                     .to_string(),
             )),
         ),
@@ -704,7 +779,7 @@ fn list_workflows_tool_spec() -> ToolSpec {
             "statuses".to_string(),
             JsonSchema::array(
                 workflow_status_schema(),
-                Some("Optional focused status filter.".to_string()),
+                Some("Optional focused status filter. Order and duplicates are ignored; explicitly listing every status is equivalent to omitting the filter.".to_string()),
             ),
         ),
     ]);
@@ -716,7 +791,104 @@ fn list_workflows_tool_spec() -> ToolSpec {
         strict: false,
         defer_loading: None,
         parameters: JsonSchema::object(properties, /*required*/ None, Some(false.into())),
-        output_schema: None,
+        output_schema: Some(list_workflows_output_schema()),
+    })
+}
+
+fn list_workflows_output_schema() -> serde_json::Value {
+    json!({
+        "type": "object",
+        "properties": {
+            "workflows": {
+                "type": "array",
+                "maxItems": MAX_WORKFLOW_COLLECTION_ITEMS,
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "runId": { "type": "string" },
+                        "workflowName": { "type": "string" },
+                        "title": { "type": ["string", "null"] },
+                        "status": {
+                            "enum": [
+                                "pending",
+                                "running",
+                                "completed",
+                                "failed",
+                                "paused",
+                                "killed"
+                            ]
+                        },
+                        "summary": { "type": "string" },
+                        "error": { "type": ["string", "null"] },
+                        "failureCount": { "type": "integer", "minimum": 0 },
+                        "usage": usage_schema(),
+                        "startedAt": { "type": "integer" },
+                        "completedAt": { "type": ["integer", "null"] },
+                        "resultAvailable": {
+                            "type": "boolean",
+                            "description": "True when a terminal snapshot carries a persisted result artifact descriptor verified at write time."
+                        },
+                        "resultBytes": {
+                            "type": ["integer", "null"],
+                            "minimum": 0,
+                            "description": "Serialized result size from the persisted artifact descriptor."
+                        },
+                        "resultSha256": {
+                            "type": ["string", "null"],
+                            "description": "SHA-256 from the persisted artifact descriptor verified at write time."
+                        }
+                    },
+                    "required": [
+                        "runId",
+                        "workflowName",
+                        "title",
+                        "status",
+                        "summary",
+                        "error",
+                        "failureCount",
+                        "usage",
+                        "startedAt",
+                        "completedAt",
+                        "resultAvailable",
+                        "resultBytes",
+                        "resultSha256"
+                    ],
+                    "additionalProperties": false
+                }
+            },
+            "totalMatched": { "type": "integer", "minimum": 0 },
+            "truncated": { "type": "boolean" },
+            "nextCursor": { "type": ["string", "null"] }
+        },
+        "required": ["workflows", "totalMatched", "truncated", "nextCursor"],
+        "additionalProperties": false
+    })
+}
+
+fn usage_schema() -> serde_json::Value {
+    json!({
+        "type": "object",
+        "properties": {
+            "totalTokens": { "type": "integer", "minimum": 0 },
+            "toolUses": { "type": "integer", "minimum": 0 },
+            "durationMs": { "type": "integer", "minimum": 0 },
+            "agentCount": { "type": "integer", "minimum": 0 },
+            "successfulAgentCount": { "type": "integer", "minimum": 0 },
+            "failedAgentCount": { "type": "integer", "minimum": 0 },
+            "skippedAgentCount": { "type": "integer", "minimum": 0 },
+            "nullAgentResultCount": { "type": "integer", "minimum": 0 }
+        },
+        "required": [
+            "totalTokens",
+            "toolUses",
+            "durationMs",
+            "agentCount",
+            "successfulAgentCount",
+            "failedAgentCount",
+            "skippedAgentCount",
+            "nullAgentResultCount"
+        ],
+        "additionalProperties": false
     })
 }
 
@@ -754,13 +926,13 @@ fn list_workflow_agents_tool_spec() -> ToolSpec {
     })
 }
 
-fn wait_workflows_tool_spec(_config: &Config) -> ToolSpec {
+fn wait_workflows_tool_spec() -> ToolSpec {
     let properties = BTreeMap::from([
         (
             "runIds".to_string(),
             JsonSchema::array(
                 JsonSchema::string(None),
-                Some("A focused set of unique workflow run ids owned by this thread.".to_string()),
+                Some("A focused set of unique workflow run ids owned by this thread; each id is at most 128 UTF-8 bytes.".to_string()),
             ),
         ),
         (
@@ -789,20 +961,118 @@ fn wait_workflows_tool_spec(_config: &Config) -> ToolSpec {
             /*required*/ Some(vec!["runIds".to_string()]),
             Some(false.into()),
         ),
-        output_schema: None,
+        output_schema: Some(wait_workflows_output_schema()),
     })
+}
+
+fn wait_workflows_output_schema() -> serde_json::Value {
+    json!({
+            "type": "object",
+            "properties": {
+                "mode": { "enum": ["any", "all"] },
+                "conditionMet": { "type": "boolean" },
+                "timedOut": { "type": "boolean" },
+                "interruptedByUserInput": { "type": "boolean" },
+                "timeoutMs": { "type": "integer", "minimum": 0 },
+                "workflows": {
+                    "type": "array",
+                    "maxItems": 8,
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "runId": { "type": "string" },
+                            "status": {
+                                "enum": [
+                                    "pending",
+                                    "running",
+                                    "completed",
+                                    "failed",
+                                    "paused",
+                                    "killed"
+                                ]
+                            },
+                            "timedOut": { "type": "boolean" },
+                            "resultAvailable": {
+                                "type": "boolean",
+                                "description": "True when a terminal snapshot carries a persisted result artifact descriptor verified at write time."
+                            },
+                            "resultBytes": {
+                                "type": ["integer", "null"],
+                                "minimum": 0,
+                                "description": "Serialized result size from the persisted artifact descriptor."
+                            },
+                            "resultSha256": {
+                                "type": ["string", "null"],
+                                "description": "SHA-256 from the persisted artifact descriptor verified at write time."
+                            },
+                            "recovery": {
+                                "type": ["object", "null"],
+                                "description": "Present only for paused, failed, or killed unfinished-run recovery candidates. The resume target is this entry's runId.",
+                                "properties": {
+                                    "recoveryEligible": { "type": "boolean" },
+                                    "reason": { "enum": ["paused", "failed", "killed"] },
+                                    "mayRequireReapproval": { "type": "boolean" },
+                                    "observedRestoreIncompatibilities": {
+                                        "type": "array",
+                                        "items": { "type": "string" },
+                                        "description": "Identity fields named by restore errors already observed on this snapshot; absence does not guarantee a future resume will match."
+                                    }
+                                },
+                                "required": [
+                                    "recoveryEligible",
+                                    "reason",
+                                    "mayRequireReapproval",
+                                    "observedRestoreIncompatibilities"
+                                ],
+                                "additionalProperties": false
+                            }
+                        },
+                        "required": [
+                            "runId",
+                            "status",
+                            "timedOut",
+                            "resultAvailable",
+                            "resultBytes",
+                            "resultSha256",
+                            "recovery"
+                        ],
+                        "additionalProperties": false
+                    }
+                }
+            },
+            "required": [
+                "mode",
+                "conditionMet",
+                "timedOut",
+                "interruptedByUserInput",
+                "timeoutMs",
+                "workflows"
+            ],
+            "additionalProperties": false
+    })
+}
+
+fn canonical_statuses(statuses: &[WorkflowTaskStatus]) -> Vec<WorkflowTaskStatus> {
+    let mut canonical = statuses.to_vec();
+    canonical.sort_by_key(|status| {
+        WORKFLOW_STATUSES
+            .iter()
+            .position(|candidate| candidate == status)
+            .unwrap_or_else(|| WORKFLOW_STATUSES.len())
+    });
+    canonical.dedup();
+    if canonical.len() == WORKFLOW_STATUSES.len() {
+        canonical.clear();
+    }
+    canonical
 }
 
 fn workflow_status_schema() -> JsonSchema {
     JsonSchema::string_enum(
-        vec![
-            json!("pending"),
-            json!("running"),
-            json!("completed"),
-            json!("failed"),
-            json!("paused"),
-            json!("killed"),
-        ],
+        WORKFLOW_STATUSES
+            .iter()
+            .map(|status| json!(status))
+            .collect(),
         None,
     )
 }

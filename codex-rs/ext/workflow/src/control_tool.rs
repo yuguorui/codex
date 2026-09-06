@@ -28,7 +28,9 @@ pub const STOP_WORKFLOW_TOOL_NAME: &str = "StopWorkflow";
 pub const RETRY_WORKFLOW_AGENT_TOOL_NAME: &str = "RetryWorkflowAgent";
 pub const SKIP_WORKFLOW_AGENT_TOOL_NAME: &str = "SkipWorkflowAgent";
 
-const CONTROL_OUTPUT_TEXT_MAX_BYTES: usize = 256;
+const CONTROL_OUTPUT_TEXT_MAX_BYTES: usize = 32;
+const MAX_CONTROL_CANDIDATES: usize = 4;
+const MAX_CONTROL_CANDIDATE_SCAN: usize = 256;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum WorkflowControlToolKind {
@@ -137,6 +139,14 @@ impl<'call> ToolExecutor<ToolCall<'call>> for WorkflowControlToolExecutor {
                     | WorkflowTaskStatus::Paused
                     | WorkflowTaskStatus::Killed
             );
+            let target_before = match agent_index {
+                Some(agent_index) => self
+                    .service
+                    .agent_progress(self.thread_id, &run_id, agent_index)
+                    .await
+                    .map_err(model_bounded_error)?,
+                None => None,
+            };
             let mut retry_impact = None;
             let accepted = match (self.kind, agent_index) {
                 (WorkflowControlToolKind::Stop, None) => {
@@ -183,17 +193,92 @@ impl<'call> ToolExecutor<ToolCall<'call>> for WorkflowControlToolExecutor {
                     .map_err(model_bounded_error)?,
                 None => None,
             };
+            let final_terminal = workflow_status_is_terminal(snapshot.status);
+            let control_open = self
+                .service
+                .control_is_open(self.thread_id, &run_id)
+                .await
+                .map_err(model_bounded_error)?;
+            let candidates = if accepted || final_terminal {
+                Vec::new()
+            } else {
+                self.control_candidates(&run_id).await?
+            };
+            let reason = (!accepted).then(|| {
+                control_rejection_reason(
+                    self.kind,
+                    final_terminal,
+                    control_open,
+                    target_before.is_some(),
+                )
+            });
+            let next_action = if final_terminal {
+                None
+            } else {
+                rejection_next_action(self.kind, &candidates)
+            };
             let output = WorkflowControlOutput::new(
                 snapshot,
                 self.kind.action(),
                 agent,
                 accepted,
+                reason,
+                candidates,
+                next_action,
                 retry_impact,
                 retry_dry_run,
             );
             let value = model_bounded_json_value(self.kind.tool_name(), &output)?;
             Ok(Box::new(JsonToolOutput::new(value)) as Box<dyn ToolOutput>)
         })
+    }
+}
+
+impl WorkflowControlToolExecutor {
+    async fn control_candidates(
+        &self,
+        run_id: &str,
+    ) -> Result<Vec<WorkflowAgentControlCandidate>, FunctionCallError> {
+        let mut candidates = Vec::new();
+        let mut offset = 0;
+        let mut scanned = 0;
+        while scanned < MAX_CONTROL_CANDIDATE_SCAN {
+            let page = self
+                .service
+                .progress_page(
+                    self.thread_id,
+                    run_id,
+                    offset,
+                    MAX_CONTROL_CANDIDATE_SCAN - scanned,
+                )
+                .await
+                .map_err(model_bounded_error)?;
+            let next_index = page.next_index;
+            for agent in page.agents {
+                scanned += 1;
+                let candidate = WorkflowAgentControlCandidate::new(agent);
+                let actionable = match self.kind {
+                    WorkflowControlToolKind::Stop => false,
+                    WorkflowControlToolKind::RetryAgent => candidate.can_retry,
+                    WorkflowControlToolKind::SkipAgent => candidate.can_skip,
+                };
+                if actionable
+                    && candidates.len() < MAX_CONTROL_CANDIDATES
+                    && !candidates
+                        .iter()
+                        .any(|existing: &WorkflowAgentControlCandidate| {
+                            existing.index == candidate.index
+                        })
+                {
+                    candidates.push(candidate);
+                }
+            }
+            let Some(next_index) = next_index else {
+                break;
+            };
+            offset = next_index;
+        }
+        Ok(candidates)
     }
 }
 
@@ -250,6 +335,55 @@ struct WorkflowAgentControlStatus {
     error: Option<String>,
 }
 
+#[derive(Clone, Copy, Debug, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+enum WorkflowControlRejectionReason {
+    TerminalWorkflow,
+    UnknownAgent,
+    AgentNotControllable,
+    AgentNotActive,
+    ControlClosed,
+}
+
+#[derive(Clone, Debug, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+struct WorkflowAgentControlCandidate {
+    index: usize,
+    label: String,
+    state: WorkflowAgentState,
+    awaiting_decision: bool,
+    skipped: bool,
+    attempt: u32,
+    error: Option<String>,
+    can_retry: bool,
+    can_skip: bool,
+}
+
+impl WorkflowAgentControlCandidate {
+    fn new(agent: codex_protocol::workflow::WorkflowAgentProgress) -> Self {
+        let active = matches!(
+            agent.state,
+            WorkflowAgentState::Queued | WorkflowAgentState::Start
+        ) && !agent.skipped;
+        let settled_retryable = matches!(
+            agent.state,
+            WorkflowAgentState::Done | WorkflowAgentState::Error
+        ) && !agent.awaiting_decision;
+        let skippable = (active || agent.awaiting_decision) && !agent.skipped;
+        Self {
+            index: agent.index,
+            label: bounded_output_text(&agent.label),
+            state: agent.state,
+            awaiting_decision: agent.awaiting_decision,
+            skipped: agent.skipped,
+            attempt: agent.attempt,
+            error: agent.error.as_deref().map(bounded_output_text),
+            can_retry: active || settled_retryable || agent.awaiting_decision,
+            can_skip: skippable,
+        }
+    }
+}
+
 #[derive(Clone, Debug, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 struct WorkflowControlOutput {
@@ -258,7 +392,10 @@ struct WorkflowControlOutput {
     accepted: bool,
     status: WorkflowTaskStatus,
     summary: String,
+    reason: Option<WorkflowControlRejectionReason>,
     agent: Option<WorkflowAgentControlStatus>,
+    candidates: Vec<WorkflowAgentControlCandidate>,
+    next_action: Option<String>,
     retry_impact: Option<WorkflowRetryImpactStatus>,
 }
 
@@ -301,6 +438,9 @@ impl WorkflowControlOutput {
         action: WorkflowControlAction,
         agent: Option<codex_protocol::workflow::WorkflowAgentProgress>,
         accepted: bool,
+        reason: Option<WorkflowControlRejectionReason>,
+        candidates: Vec<WorkflowAgentControlCandidate>,
+        next_action: Option<String>,
         retry_impact: Option<WorkflowRetryImpact>,
         retry_dry_run: bool,
     ) -> Self {
@@ -318,11 +458,79 @@ impl WorkflowControlOutput {
             accepted,
             status: snapshot.status,
             summary: bounded_output_text(&snapshot.summary),
+            reason,
             agent,
+            candidates,
+            next_action,
             retry_impact: retry_impact
                 .map(|impact| WorkflowRetryImpactStatus::new(impact, retry_dry_run)),
         }
     }
+}
+
+fn control_rejection_reason(
+    kind: WorkflowControlToolKind,
+    terminal: bool,
+    control_open: bool,
+    target_recorded: bool,
+) -> WorkflowControlRejectionReason {
+    if terminal {
+        return WorkflowControlRejectionReason::TerminalWorkflow;
+    }
+    if !control_open {
+        return WorkflowControlRejectionReason::ControlClosed;
+    }
+    match kind {
+        WorkflowControlToolKind::Stop => WorkflowControlRejectionReason::ControlClosed,
+        WorkflowControlToolKind::RetryAgent => {
+            if target_recorded {
+                WorkflowControlRejectionReason::AgentNotControllable
+            } else {
+                WorkflowControlRejectionReason::UnknownAgent
+            }
+        }
+        WorkflowControlToolKind::SkipAgent => {
+            if target_recorded {
+                WorkflowControlRejectionReason::AgentNotActive
+            } else {
+                WorkflowControlRejectionReason::UnknownAgent
+            }
+        }
+    }
+}
+
+fn rejection_next_action(
+    kind: WorkflowControlToolKind,
+    candidates: &[WorkflowAgentControlCandidate],
+) -> Option<String> {
+    let candidate = candidates.iter().find(|candidate| match kind {
+        WorkflowControlToolKind::Stop => false,
+        WorkflowControlToolKind::RetryAgent => candidate.can_retry,
+        WorkflowControlToolKind::SkipAgent => candidate.can_skip,
+    })?;
+    match kind {
+        WorkflowControlToolKind::Stop => Some(
+            "The workflow control lane is closed; wait for status before trying again.".to_string(),
+        ),
+        WorkflowControlToolKind::RetryAgent => Some(format!(
+            "Use agentIndex={} with RetryWorkflowAgent; dryRun=true reports the blast radius first.",
+            candidate.index
+        )),
+        WorkflowControlToolKind::SkipAgent => Some(format!(
+            "Use agentIndex={} with SkipWorkflowAgent while that agent remains active.",
+            candidate.index
+        )),
+    }
+}
+
+fn workflow_status_is_terminal(status: WorkflowTaskStatus) -> bool {
+    matches!(
+        status,
+        WorkflowTaskStatus::Completed
+            | WorkflowTaskStatus::Failed
+            | WorkflowTaskStatus::Paused
+            | WorkflowTaskStatus::Killed
+    )
 }
 
 fn bounded_output_text(value: &str) -> String {
@@ -365,7 +573,8 @@ fn workflow_control_tool_spec(kind: WorkflowControlToolKind) -> ToolSpec {
             properties.insert(
                 "agentIndex".to_string(),
                 JsonSchema::integer(Some(
-                    "Zero-based index of the active workflow agent to skip.".to_string(),
+                    "Zero-based index of an active or awaiting-decision workflow agent to skip."
+                        .to_string(),
                 )),
             );
             (
@@ -395,6 +604,17 @@ fn control_output_schema() -> serde_json::Value {
                 "enum": ["pending", "running", "completed", "failed", "paused", "killed"]
             },
             "summary": { "type": "string" },
+            "reason": {
+                "type": ["string", "null"],
+                "enum": [
+                    "terminalWorkflow",
+                    "unknownAgent",
+                    "agentNotControllable",
+                    "agentNotActive",
+                    "controlClosed",
+                    null
+                ]
+            },
             "agent": {
                 "anyOf": [
                     {
@@ -420,6 +640,37 @@ fn control_output_schema() -> serde_json::Value {
                     { "type": "null" }
                 ]
             },
+            "candidates": {
+                "type": "array",
+                "maxItems": 4,
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "index": { "type": "integer", "minimum": 0 },
+                        "label": { "type": "string" },
+                        "state": { "enum": ["queued", "start", "done", "error"] },
+                        "awaitingDecision": { "type": "boolean" },
+                        "skipped": { "type": "boolean" },
+                        "attempt": { "type": "integer", "minimum": 0 },
+                        "error": { "type": ["string", "null"] },
+                        "canRetry": { "type": "boolean" },
+                        "canSkip": { "type": "boolean" }
+                    },
+                    "required": [
+                        "index",
+                        "label",
+                        "state",
+                        "awaitingDecision",
+                        "skipped",
+                        "attempt",
+                        "error",
+                        "canRetry",
+                        "canSkip"
+                    ],
+                    "additionalProperties": false
+                }
+            },
+            "nextAction": { "type": ["string", "null"] },
             "retryImpact": {
                 "anyOf": [
                     {
@@ -450,7 +701,10 @@ fn control_output_schema() -> serde_json::Value {
             "accepted",
             "status",
             "summary",
+            "reason",
             "agent",
+            "candidates",
+            "nextAction",
             "retryImpact"
         ],
         "additionalProperties": false

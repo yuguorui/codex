@@ -1621,6 +1621,36 @@ impl WorkflowService {
         Ok(agent)
     }
 
+    pub(crate) async fn resume_args(
+        &self,
+        thread_id: ThreadId,
+        run_id: &str,
+    ) -> Result<JsonValue, WorkflowServiceError> {
+        let codex_home = self
+            .thread_codex_home(thread_id)
+            .ok_or(WorkflowServiceError::NotFound)?;
+        let loaded = load_snapshot(&codex_home, thread_id, run_id)
+            .await
+            .map_err(WorkflowServiceError::Persistence)?
+            .ok_or(WorkflowServiceError::NotFound)?;
+        if matches!(
+            loaded.snapshot.status,
+            WorkflowTaskStatus::Pending | WorkflowTaskStatus::Running
+        ) {
+            return Err(WorkflowServiceError::StillRunning);
+        }
+        Ok(loaded.snapshot.args)
+    }
+
+    pub(crate) async fn control_is_open(
+        &self,
+        thread_id: ThreadId,
+        run_id: &str,
+    ) -> Result<bool, WorkflowServiceError> {
+        let task = self.task_for_thread(thread_id, run_id).await?;
+        Ok(task.control.is_open())
+    }
+
     pub(crate) async fn progress_page(
         &self,
         thread_id: ThreadId,
@@ -1764,12 +1794,21 @@ impl WorkflowService {
         offset: u64,
         max_bytes: usize,
     ) -> Result<WorkflowResultChunk, String> {
+        self.load_result(thread_id, snapshot)
+            .await
+            .and_then(|verified| read_verified_result_chunk(&verified, offset, max_bytes))
+    }
+
+    pub(crate) async fn load_result(
+        &self,
+        thread_id: ThreadId,
+        snapshot: &WorkflowTaskSnapshot,
+    ) -> Result<VerifiedWorkflowResult, String> {
         let task = self
             .task_for_thread(thread_id, &snapshot.run_id)
             .await
             .map_err(|error| error.to_string())?;
-        let verified = task.ensure_result_verified(snapshot).await?;
-        read_verified_result_chunk(&verified, offset, max_bytes)
+        task.ensure_result_verified(snapshot).await
     }
 
     async fn task_for_thread(

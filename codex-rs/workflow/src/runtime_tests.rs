@@ -9,6 +9,7 @@ use pretty_assertions::assert_eq;
 use serde_json::json;
 use tokio::sync::Notify;
 use tokio::sync::Semaphore;
+use tokio::time::timeout;
 use tokio_util::sync::CancellationToken;
 
 use super::*;
@@ -2563,6 +2564,68 @@ async fn stalled_agents_suspend_for_user_retry_and_skip() {
                 && !agent.awaiting_decision
                 && agent.skipped
     )));
+}
+
+#[tokio::test]
+async fn awaiting_user_decision_does_not_hold_the_last_parallel_concurrency_slot() {
+    let runtime = Arc::new(FakeAgentRuntime::default());
+    let control = WorkflowControl::new();
+    let task_control = control.clone();
+    let (event_tx, mut event_rx) = tokio::sync::mpsc::unbounded_channel();
+    let task_runtime = runtime.clone();
+    let workflow = script(
+        r#"
+return parallel([
+  () => agent('always-stall', { label: 'stalled' }),
+  () => agent('healthy', { label: 'queued' }),
+]);
+"#,
+    );
+    let task = tokio::spawn(async move {
+        execute_workflow(
+            &workflow,
+            json!(null),
+            task_runtime,
+            Arc::new(move |_, event| {
+                let _ = event_tx.send(event);
+            }),
+            WorkflowRuntimeConfig {
+                concurrency: 1,
+                stall_retries: 0,
+                stall_retry_base_delay: Duration::from_millis(1),
+                stall_retry_max_delay: Duration::from_millis(1),
+                throttle_retry_delay: Duration::ZERO,
+                ..WorkflowRuntimeConfig::default()
+            },
+            task_control,
+        )
+        .await
+    });
+
+    loop {
+        let event = event_rx.recv().await.unwrap();
+        if let WorkflowEvent::WorkflowAgent(agent) = event
+            && agent.state == WorkflowAgentState::Error
+            && agent.awaiting_decision
+        {
+            assert_eq!(agent.label, "stalled");
+            break;
+        }
+    }
+    timeout(Duration::from_secs(1), async {
+        loop {
+            if runtime.prompts().iter().any(|prompt| prompt == "healthy") {
+                break;
+            }
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("queued agent should run while stalled agent awaits user input");
+    assert!(control.skip_agent(0));
+
+    let outcome = task.await.unwrap().unwrap();
+    assert_eq!(outcome.result, json!([JsonValue::Null, "result:healthy"]));
 }
 
 #[test]

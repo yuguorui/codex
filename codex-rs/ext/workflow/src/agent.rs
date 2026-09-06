@@ -286,6 +286,9 @@ impl CodexWorkflowAgentRuntime {
         }
         config.agents_enabled = false;
         config.agent_max_depth = 0;
+        // Workflow subagents are background workers. They must not ask the user questions;
+        // ordinary tool authorization remains governed by the captured thread configuration.
+        config.experimental_request_user_input_enabled = false;
         if matches!(request.options.isolation, Some(WorkflowIsolation::Worktree))
             && self.environment_location == WorkflowEnvironmentLocation::Remote
         {

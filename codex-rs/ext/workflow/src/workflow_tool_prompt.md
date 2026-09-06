@@ -10,8 +10,11 @@ Provide exactly one source:
 
 Foreign execution-environment filesystems accept only inline `script`. The call launches in the
 background and returns its `runId` and persisted `scriptPath`. Use `WaitWorkflow` when one result is
-on the critical path, `WaitWorkflows` for a focused set, and `ReadWorkflowResult` only when a
-terminal result is too large to return inline. Status and control remain with the owning agent.
+on the critical path and `WaitWorkflows` for a focused set. Use `ReadWorkflowResult` when a terminal
+result is too large to return inline; its RFC 6901 `jsonPointer` (maximum 512 UTF-8 bytes) selects
+one value, and `writePath` writes the complete or projected JSON through the selected execution
+environment. Status and control remain with the owning agent. `transcriptDir` and `scriptPath` are
+app-server host artifact paths, not paths in the selected remote execution environment.
 
 An inline script starts with literal metadata and returns a JSON-compatible value from an async
 body:
@@ -32,9 +35,12 @@ return agent("Inspect the request supplied in inputs.", {
 
 Core globals:
 
-- `args` is the invocation's JSON value. Pass variable runtime data through named
+- `args` is the invocation's JSON value. Omit it for a new workflow to use null; with
+  `resumeFromRunId`, omit it to reuse that run's persisted arguments. Explicit resume arguments
+  replace the saved arguments and disable journal replay. Pass variable runtime data through named
   `agent(..., { inputs })` values rather than concatenating it into prompts. Agents with structured
-  inputs receive `AnalyzeWorkflowInputs` for bounded inspection.
+  inputs receive `AnalyzeWorkflowInputs` for bounded inspection; an oversized analysis returns
+  `resultShape` and `nextAction` for narrowing the next program.
 - `agent()` runs a subagent; `agentSettled()` returns an explicit fulfilled or rejected status.
 - `parallel()` and `pipeline()` coordinate bounded work. Use `parallel(..., { requireAll: true })`
   only when every result is required.

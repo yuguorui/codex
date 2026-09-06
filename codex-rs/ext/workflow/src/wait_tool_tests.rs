@@ -1,6 +1,7 @@
 use super::*;
 use codex_config::LoaderOverrides;
 use codex_core::config::ConfigBuilder;
+use codex_utils_path_uri::PathUri;
 use pretty_assertions::assert_eq;
 use serde_json::Value as JsonValue;
 use serde_json::json;
@@ -30,7 +31,11 @@ async fn spec_requires_run_id_without_exposing_timeout_capacity_values() {
     let properties = spec.parameters.properties.unwrap();
     assert_eq!(
         properties.keys().cloned().collect::<Vec<_>>(),
-        vec!["runId".to_string(), "timeoutMs".to_string(),]
+        vec![
+            "runId".to_string(),
+            "timeoutMs".to_string(),
+            "writePath".to_string(),
+        ]
     );
     let timeout_description = properties["timeoutMs"].description.as_deref().unwrap();
     assert!(timeout_description.contains("configured default"));
@@ -50,6 +55,7 @@ async fn spec_requires_run_id_without_exposing_timeout_capacity_values() {
             "timedOut",
             "interruptedByUserInput",
             "timeoutMs",
+            "recovery",
             "result",
             "resultAvailable",
             "resultInline",
@@ -57,6 +63,9 @@ async fn spec_requires_run_id_without_exposing_timeout_capacity_values() {
             "resultPreview",
             "resultBytes",
             "resultError",
+            "resultWritten",
+            "resultWritePath",
+            "resultSha256",
             "nextAction"
         ])
     );
@@ -106,6 +115,8 @@ async fn output_bounds_text_and_returns_the_terminal_result() {
         /*interrupted_by_user_input*/ false,
         Some(&result_chunk),
         /*result_error*/ None,
+        /*written_result*/ None,
+        /*write_error*/ None,
     )
     .unwrap();
 
@@ -138,14 +149,24 @@ async fn output_bounds_text_and_returns_the_terminal_result() {
             "timedOut": false,
             "interruptedByUserInput": false,
             "timeoutMs": 100,
+            "recovery": {
+                "recoveryEligible": true,
+                "reason": "failed",
+                "mayRequireReapproval": true,
+                "identityRequirements": ["sameApprovedWorkflowIdentity"],
+                "observedRestoreIncompatibilities": []
+            },
             "result": null,
             "resultAvailable": true,
-            "resultInline": true,
-            "resultTruncated": false,
+            "resultInline": false,
+            "resultTruncated": true,
             "resultPreview": null,
             "resultBytes": 4,
             "resultError": null,
-            "nextAction": null
+            "resultWritten": false,
+            "resultWritePath": null,
+            "resultSha256": null,
+            "nextAction": "ReadWorkflowResult: offset=0 or writePath."
         })
     );
     let config = ConfigBuilder::default()
@@ -208,6 +229,8 @@ fn low_compression_wait_output_stays_below_the_context_item_cap() {
         /*interrupted_by_user_input*/ false,
         /*result_chunk*/ None,
         Some("corrupt ".repeat(1_000).as_str()),
+        /*written_result*/ None,
+        /*write_error*/ None,
     )
     .unwrap();
 
@@ -215,13 +238,72 @@ fn low_compression_wait_output_stays_below_the_context_item_cap() {
     let result_data = serde_json::to_value(&output.result_data).unwrap();
     assert_eq!(result_data["resultAvailable"], false);
     assert!(result_data["resultError"].as_str().is_some());
-    assert_eq!(
-        result_data["nextAction"],
-        "Call ReadWorkflowResult with runId \"wf_low-compression\" and offset 0."
-    );
+    assert_eq!(result_data["nextAction"], "ReadWorkflowResult: offset=0.");
     assert!(!result_data["nextAction"].as_str().unwrap().contains('/'));
     assert!(serialized_bytes < 1_000);
     assert!(serialized_bytes <= crate::workflow_result_tool::WAIT_MODEL_CONTEXT_ITEM_MAX_BYTES);
+}
+
+#[test]
+fn written_wait_result_compacts_without_truncating_a_usable_path() {
+    let root = codex_utils_absolute_path::AbsolutePathBuf::try_from(std::env::temp_dir()).unwrap();
+    let low_compression = (0..8_000)
+        .map(|index| char::from_u32(0x21 + (index * 73 % 90)).unwrap())
+        .collect::<String>();
+    let write = crate::workflow_result_write::WorkflowResultWrite {
+        path: PathUri::parse(&format!("file:///tmp/{}.json", "p".repeat(1_000))).unwrap(),
+        bytes: 4,
+        sha256: "0".repeat(64),
+    };
+    let output = WaitWorkflowOutput::from_outcome_with_result_chunk(
+        WorkflowWaitOutcome {
+            snapshot: crate::service::WorkflowTaskSnapshot {
+                thread_id: "thread".to_string(),
+                turn_id: "turn".to_string(),
+                task_id: "task".to_string(),
+                run_id: "wf_written".to_string(),
+                workflow_name: low_compression.clone(),
+                title: None,
+                status: WorkflowTaskStatus::Completed,
+                summary: low_compression,
+                transcript_dir: root.join("transcript"),
+                script_path: root.join("workflow.js"),
+                args: JsonValue::Null,
+                result_artifact: Some(crate::result_artifact::WorkflowResultArtifact {
+                    sha256: "0".repeat(64),
+                    bytes: 4,
+                    storage_id: "0".repeat(32),
+                }),
+                output_file: root.join("workflow.json"),
+                progress: Vec::new(),
+                progress_version: 0,
+                usage: WorkflowUsage::default(),
+                failures: Vec::new(),
+                error: None,
+                started_at: 1,
+                completed_at: Some(2),
+                script_sha256: "sha256".to_string(),
+            },
+            timed_out: false,
+        },
+        /*timeout_ms*/ 100,
+        /*interrupted_by_user_input*/ false,
+        /*result_chunk*/ None,
+        /*result_error*/ None,
+        Some(&write),
+        /*write_error*/ None,
+    )
+    .unwrap();
+
+    assert!(
+        serde_json::to_vec(&output).unwrap().len()
+            <= crate::workflow_result_tool::WAIT_MODEL_CONTEXT_ITEM_MAX_BYTES
+    );
+    let result_data = serde_json::to_value(&output.result_data).unwrap();
+    assert_eq!(result_data["resultWritten"], true);
+    assert_eq!(result_data["resultWritePath"], serde_json::Value::Null);
+    assert_eq!(result_data["resultSha256"], "0".repeat(64));
+    assert_eq!(result_data["resultBytes"], 4);
 }
 
 #[test]
@@ -327,6 +409,8 @@ fn paused_wait_is_terminal_without_exposing_a_result() {
             /*interrupted_by_user_input*/ false,
             Some(&result_chunk),
             /*result_error*/ None,
+            /*written_result*/ None,
+            /*write_error*/ None,
         )
         .unwrap()
         .result_data,

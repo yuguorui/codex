@@ -31,6 +31,7 @@ use serde::Deserialize;
 use serde_json::Value as JsonValue;
 use sha2::Digest;
 use sha2::Sha256;
+use tokio::sync::OwnedSemaphorePermit;
 use tokio::sync::Semaphore;
 use tokio::sync::watch;
 use tokio_util::sync::CancellationToken;
@@ -286,6 +287,10 @@ impl WorkflowControl {
         self.state.cancellation.is_cancelled()
     }
 
+    pub fn is_open(&self) -> bool {
+        self.state.is_open()
+    }
+
     /// Closes control submission without cancelling workflow execution.
     pub fn close(&self) {
         self.state.close();
@@ -374,6 +379,14 @@ impl ControlState {
             .lifecycle
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner) = ControlLifecycle::Closed;
+    }
+
+    fn is_open(&self) -> bool {
+        *self
+            .lifecycle
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            == ControlLifecycle::Open
     }
 
     fn agent_is_active(&self, index: usize) -> bool {

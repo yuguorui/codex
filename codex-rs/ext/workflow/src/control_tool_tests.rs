@@ -77,8 +77,16 @@ fn output_serialization_is_bounded_and_reports_agent_control_state() {
     let output = WorkflowControlOutput::new(
         snapshot,
         WorkflowControlAction::RetryAgent,
-        agent,
+        agent.clone(),
         false,
+        Some(WorkflowControlRejectionReason::AgentNotControllable),
+        vec![WorkflowAgentControlCandidate::new(
+            agent.expect("agent progress"),
+        )],
+        Some(
+            "Use agentIndex=2 with RetryWorkflowAgent; dryRun=true reports the blast radius first."
+                .to_string(),
+        ),
         None,
         false,
     );
@@ -92,6 +100,7 @@ fn output_serialization_is_bounded_and_reports_agent_control_state() {
             "accepted": false,
             "status": "running",
             "summary": bounded_output_text(&"summary ".repeat(2_000)),
+            "reason": "agentNotControllable",
             "agent": {
                 "index": 2,
                 "state": "error",
@@ -100,11 +109,73 @@ fn output_serialization_is_bounded_and_reports_agent_control_state() {
                 "attempt": 3,
                 "error": bounded_output_text(&"error ".repeat(2_000)),
             },
+            "candidates": [{
+                "index": 2,
+                "label": "agent",
+                "state": "error",
+                "awaitingDecision": true,
+                "skipped": false,
+                "attempt": 3,
+                "error": bounded_output_text(&"error ".repeat(2_000)),
+                "canRetry": true,
+                "canSkip": true,
+            }],
+            "nextAction": "Use agentIndex=2 with RetryWorkflowAgent; dryRun=true reports the blast radius first.",
             "retryImpact": null
         })
     );
     assert!(value["summary"].as_str().unwrap().len() < "summary ".repeat(2_000).len());
     assert!(value["agent"]["error"].as_str().unwrap().len() < "error ".repeat(2_000).len());
+    let ToolSpec::Function(spec) = workflow_control_tool_spec(WorkflowControlToolKind::RetryAgent)
+    else {
+        panic!("workflow control should be a function tool");
+    };
+    let schema = spec.output_schema.expect("control output schema");
+    let validator = jsonschema::validator_for(&schema).unwrap();
+    assert!(validator.is_valid(&value));
+}
+
+#[test]
+fn control_candidate_output_stays_structured_in_the_worst_escape_case() {
+    let candidates = (0..4)
+        .map(|index| WorkflowAgentControlCandidate {
+            index,
+            label: "\0".repeat(CONTROL_OUTPUT_TEXT_MAX_BYTES),
+            state: WorkflowAgentState::Error,
+            awaiting_decision: false,
+            skipped: false,
+            attempt: index as u32,
+            error: Some("\0".repeat(CONTROL_OUTPUT_TEXT_MAX_BYTES)),
+            can_retry: true,
+            can_skip: false,
+        })
+        .collect::<Vec<_>>();
+    let output = WorkflowControlOutput::new(
+        snapshot_with_agent(),
+        WorkflowControlAction::RetryAgent,
+        None,
+        false,
+        Some(WorkflowControlRejectionReason::UnknownAgent),
+        candidates,
+        None,
+        None,
+        false,
+    );
+
+    let value = model_bounded_json_value(RETRY_WORKFLOW_AGENT_TOOL_NAME, &output).unwrap();
+    let ToolSpec::Function(spec) = workflow_control_tool_spec(WorkflowControlToolKind::RetryAgent)
+    else {
+        panic!("workflow control should be a function tool");
+    };
+    let schema = spec.output_schema.expect("control output schema");
+    let validator = jsonschema::validator_for(&schema).unwrap();
+    assert!(validator.is_valid(&value));
+
+    assert!(
+        serde_json::to_vec(&value).unwrap().len()
+            <= crate::workflow_result_tool::MODEL_TOOL_OUTPUT_MAX_BYTES
+    );
+    assert_eq!(value["candidates"].as_array().unwrap().len(), 4);
 }
 
 #[test]
@@ -114,6 +185,9 @@ fn retry_output_reports_blast_radius() {
         WorkflowControlAction::RetryAgent,
         None,
         true,
+        None,
+        Vec::new(),
+        None,
         Some(WorkflowRetryImpact {
             scope: WorkflowRetryScope::SettledPrefix,
             target_agent_index: 2,
@@ -143,6 +217,9 @@ fn stop_output_has_no_agent_status() {
         None,
         true,
         None,
+        Vec::new(),
+        None,
+        None,
         false,
     );
 
@@ -150,6 +227,60 @@ fn stop_output_has_no_agent_status() {
         serde_json::to_value(output).unwrap()["agent"],
         JsonValue::Null
     );
+}
+
+#[test]
+fn rejection_reasons_distinguish_terminal_closed_unknown_and_inactive_agents() {
+    let cases = [
+        (
+            WorkflowControlToolKind::RetryAgent,
+            true,
+            false,
+            true,
+            WorkflowControlRejectionReason::TerminalWorkflow,
+        ),
+        (
+            WorkflowControlToolKind::RetryAgent,
+            false,
+            true,
+            false,
+            WorkflowControlRejectionReason::UnknownAgent,
+        ),
+        (
+            WorkflowControlToolKind::RetryAgent,
+            false,
+            true,
+            true,
+            WorkflowControlRejectionReason::AgentNotControllable,
+        ),
+        (
+            WorkflowControlToolKind::SkipAgent,
+            false,
+            true,
+            true,
+            WorkflowControlRejectionReason::AgentNotActive,
+        ),
+        (
+            WorkflowControlToolKind::Stop,
+            false,
+            false,
+            false,
+            WorkflowControlRejectionReason::ControlClosed,
+        ),
+        (
+            WorkflowControlToolKind::SkipAgent,
+            false,
+            false,
+            true,
+            WorkflowControlRejectionReason::ControlClosed,
+        ),
+    ];
+    for (kind, terminal, control_open, target_recorded, expected) in cases {
+        assert_eq!(
+            control_rejection_reason(kind, terminal, control_open, target_recorded),
+            expected
+        );
+    }
 }
 
 fn snapshot_with_agent() -> WorkflowTaskSnapshot {

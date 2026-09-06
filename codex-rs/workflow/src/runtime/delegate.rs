@@ -171,14 +171,7 @@ impl WorkflowDelegate {
             },
         )
         .await;
-        let permit = tokio::select! {
-            permit = Arc::clone(&self.semaphore).acquire_owned() => {
-                permit.map_err(|_| "workflow concurrency limiter closed".to_string())?
-            }
-            _ = self.control.cancellation.cancelled() => return Err("workflow cancelled".to_string()),
-            _ = tool_cancellation.cancelled() => return Err("workflow agent call cancelled".to_string()),
-        };
-        let _permit = permit;
+        let mut concurrency_permit = Some(self.acquire_agent_permit(&tool_cancellation).await?);
         if let Some(journal) = self.config.journal.as_ref() {
             journal
                 .append_started(journal_key.clone())
@@ -495,6 +488,9 @@ impl WorkflowDelegate {
                     attempt = attempt.saturating_add(1);
                 }
                 Err(failure) if failure.kind == WorkflowAgentFailureKind::Stalled => {
+                    // A user decision has no deadline. Release the concurrency slot while this
+                    // attempt waits so queued invocations can make progress.
+                    drop(concurrency_permit.take());
                     let decision = self
                         .await_user_decision(
                             &input,
@@ -512,6 +508,8 @@ impl WorkflowDelegate {
                         .await;
                     match decision {
                         Some(AgentAction::Retry) => {
+                            concurrency_permit =
+                                Some(self.acquire_agent_permit(&tool_cancellation).await?);
                             attempt = attempt.saturating_add(1);
                         }
                         Some(AgentAction::Skip) => {
@@ -653,6 +651,19 @@ impl WorkflowDelegate {
                     return Err(message);
                 }
             }
+        }
+    }
+
+    async fn acquire_agent_permit(
+        &self,
+        tool_cancellation: &CancellationToken,
+    ) -> Result<OwnedSemaphorePermit, String> {
+        tokio::select! {
+            permit = Arc::clone(&self.semaphore).acquire_owned() => {
+                permit.map_err(|_| "workflow concurrency limiter closed".to_string())
+            }
+            _ = self.control.cancellation.cancelled() => Err("workflow cancelled".to_string()),
+            _ = tool_cancellation.cancelled() => Err("workflow agent call cancelled".to_string()),
         }
     }
 

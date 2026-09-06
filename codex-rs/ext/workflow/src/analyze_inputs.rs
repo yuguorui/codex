@@ -27,6 +27,7 @@ use codex_workflow::WorkflowInputArtifactRef;
 use codex_workflow::WorkflowInputDescriptor;
 use codex_workflow::WorkflowInputPathSegment;
 use serde::Deserialize;
+use serde::Serialize;
 use serde_json::Value as JsonValue;
 use serde_json::json;
 use tokio::sync::OnceCell;
@@ -141,11 +142,15 @@ impl<'call> ToolExecutor<ToolCall<'call>> for AnalyzeWorkflowInputsToolExecutor 
                     "failed to serialize workflow input analysis: {error}"
                 ))
             })?;
-            if serialized.len() > MAX_ANALYSIS_OUTPUT_BYTES {
-                return Err(model_error(format!(
-                    "{ANALYZE_WORKFLOW_INPUTS_TOOL_NAME} should return a focused view; inspect the remaining inputs with additional calls"
-                )));
-            }
+            let value = if serialized.len() > MAX_ANALYSIS_OUTPUT_BYTES {
+                analysis_overflow_value(&output).map_err(|error| {
+                    model_error(format!(
+                        "failed to serialize workflow input analysis shape: {error}"
+                    ))
+                })?
+            } else {
+                value
+            };
             Ok(Box::new(JsonToolOutput::new(value)) as Box<dyn ToolOutput>)
         })
     }
@@ -162,6 +167,142 @@ struct AnalysisOutput {
     result: JsonValue,
     logs: Vec<String>,
     logs_truncated: bool,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct AnalysisOverflowOutput {
+    error: AnalysisOverflowError,
+    result_shape: JsonValue,
+    logs_omitted: bool,
+    logs_truncated: bool,
+    next_action: &'static str,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct AnalysisOverflowError {
+    kind: &'static str,
+    max_bytes: usize,
+}
+
+fn analysis_overflow_value(output: &AnalysisOutput) -> serde_json::Result<JsonValue> {
+    let mut shape = analysis_shape(&output.result);
+    loop {
+        let value = serde_json::to_value(AnalysisOverflowOutput {
+            error: AnalysisOverflowError {
+                kind: "outputTooLarge",
+                max_bytes: MAX_ANALYSIS_OUTPUT_BYTES,
+            },
+            result_shape: shape.clone(),
+            logs_omitted: true,
+            logs_truncated: output.logs_truncated,
+            next_action: "Return a smaller projection of one resultShape key or item, then inspect remaining entries in separate calls.",
+        })?;
+        if serde_json::to_vec(&value)?.len() <= MAX_ANALYSIS_OUTPUT_BYTES {
+            return Ok(value);
+        }
+        let JsonValue::Object(object) = &mut shape else {
+            break;
+        };
+        if object.remove("itemShapes").is_none()
+            && object.remove("keys").is_none()
+            && object.remove("keyShape").is_none()
+        {
+            break;
+        }
+    }
+    serde_json::to_value(AnalysisOverflowOutput {
+        error: AnalysisOverflowError {
+            kind: "outputTooLarge",
+            max_bytes: MAX_ANALYSIS_OUTPUT_BYTES,
+        },
+        result_shape: json!({"kind": kind_name(&output.result)}),
+        logs_omitted: true,
+        logs_truncated: output.logs_truncated,
+        next_action: "Return only a bounded scalar or one top-level key from the analysis result.",
+    })
+}
+
+fn analysis_shape(value: &JsonValue) -> JsonValue {
+    match value {
+        JsonValue::Object(values) => {
+            let mut keys = Vec::new();
+            for (name, value) in values.iter().take(6) {
+                keys.push(analysis_key_shape(name, value));
+            }
+            json!({
+                "kind": "object",
+                "keyCount": values.len(),
+                "keys": keys,
+                "keysOmitted": values.len().saturating_sub(6),
+            })
+        }
+        JsonValue::Array(values) => {
+            let item_shapes = values
+                .iter()
+                .take(4)
+                .map(analysis_shape)
+                .collect::<Vec<_>>();
+            json!({
+                "kind": "array",
+                "count": values.len(),
+                "itemShapes": item_shapes,
+                "itemsOmitted": values.len().saturating_sub(4),
+            })
+        }
+        JsonValue::String(value) => json!({
+            "kind": "string",
+            "bytes": value.len(),
+        }),
+        JsonValue::Number(_) => json!({"kind": "number"}),
+        JsonValue::Bool(_) => json!({"kind": "boolean"}),
+        JsonValue::Null => json!({"kind": "null"}),
+    }
+}
+
+fn analysis_key_shape(name: &str, value: &JsonValue) -> JsonValue {
+    let mut shape = match value {
+        JsonValue::Object(values) => json!({
+            "kind": "object",
+            "keyCount": values.len(),
+        }),
+        JsonValue::Array(values) => json!({
+            "kind": "array",
+            "count": values.len(),
+        }),
+        JsonValue::String(value) => json!({
+            "kind": "string",
+            "bytes": value.len(),
+        }),
+        JsonValue::Number(_) => json!({"kind": "number"}),
+        JsonValue::Bool(_) => json!({"kind": "boolean"}),
+        JsonValue::Null => json!({"kind": "null"}),
+    };
+    let JsonValue::Object(object) = &mut shape else {
+        unreachable!("analysis key shape is always an object");
+    };
+    object.insert(
+        "name".to_string(),
+        JsonValue::String(bounded_text(name, 32)),
+    );
+    object.insert("nameBytes".to_string(), JsonValue::from(name.len()));
+    object.insert(
+        "nameTruncated".to_string(),
+        JsonValue::Bool(name.len() > 32),
+    );
+    shape
+}
+
+fn kind_name(value: &JsonValue) -> &'static str {
+    match value {
+        JsonValue::Object(_) => "object",
+        JsonValue::Array(_) => "array",
+        JsonValue::String(_) => "string",
+        JsonValue::Number(_) => "number",
+        JsonValue::Bool(_) => "boolean",
+        JsonValue::Null => "null",
+    }
 }
 
 #[cfg(test)]
@@ -934,10 +1075,57 @@ fn bounded_v8_string(
     bounded_text(&String::from_utf8_lossy(&bytes), maximum)
 }
 
+fn analyze_workflow_inputs_output_schema() -> JsonValue {
+    json!({
+        "oneOf": [
+            {
+                "type": "object",
+                "description": "Focused analysis result. The complete serialized envelope is no larger than 960 bytes.",
+                "properties": {
+                    "result": {},
+                    "logs": { "type": "array", "items": { "type": "string" } },
+                    "logsTruncated": { "type": "boolean" }
+                },
+                "required": ["result", "logs", "logsTruncated"],
+                "additionalProperties": false
+            },
+            {
+                "type": "object",
+                "description": "Bounded shape returned when the analysis result exceeds the output cap. Neither result nor logs is partially returned.",
+                "properties": {
+                    "error": {
+                        "type": "object",
+                        "properties": {
+                            "kind": { "const": "outputTooLarge" },
+                            "maxBytes": { "const": MAX_ANALYSIS_OUTPUT_BYTES }
+                        },
+                        "required": ["kind", "maxBytes"],
+                        "additionalProperties": false
+                    },
+                    "resultShape": {
+                        "description": "Shallow shape of the oversized result. Truncated names set nameTruncated=true and include nameBytes."
+                    },
+                    "logsOmitted": { "const": true },
+                    "logsTruncated": { "type": "boolean" },
+                    "nextAction": { "type": "string" }
+                },
+                "required": [
+                    "error",
+                    "resultShape",
+                    "logsOmitted",
+                    "logsTruncated",
+                    "nextAction"
+                ],
+                "additionalProperties": false
+            }
+        ]
+    })
+}
+
 fn analyze_workflow_inputs_spec() -> ToolSpec {
     ToolSpec::Function(ResponsesApiTool {
         name: ANALYZE_WORKFLOW_INPUTS_TOOL_NAME.to_string(),
-        description: "Analyze complete deep-frozen workflow inputs with a synchronous pure JavaScript program. Discover available input names with `Object.keys(globalThis.inputs)`, then access values through `globalThis.inputs`. Return a JSON-compatible result with `return`, use `console.log` for diagnostics, and use `helpers.utf8Slice(value, startByte, maxBytes)` for UTF-8 byte slicing."
+        description: "Analyze complete deep-frozen workflow inputs with a synchronous pure JavaScript program. Discover available input names with `Object.keys(globalThis.inputs)`, then access values through `globalThis.inputs`. Return a JSON-compatible result with `return`, use `console.log` for diagnostics, and use `helpers.utf8Slice(value, startByte, maxBytes)` for UTF-8 byte slicing. If the result is too large, the tool returns a bounded resultShape and nextAction instead of the value."
             .to_string(),
         strict: true,
         parameters: parse_tool_input_schema(&json!({
@@ -952,7 +1140,7 @@ fn analyze_workflow_inputs_spec() -> ToolSpec {
             "additionalProperties": false
         }))
         .expect("AnalyzeWorkflowInputs schema must be valid"),
-        output_schema: None,
+        output_schema: Some(analyze_workflow_inputs_output_schema()),
         defer_loading: None,
     })
 }

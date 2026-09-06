@@ -22,6 +22,7 @@ use codex_utils_output_truncation::TruncationPolicy;
 use codex_workflow::validate_workflow_script;
 use pretty_assertions::assert_eq;
 use serde_json::Value as JsonValue;
+use serde_json::json;
 use std::sync::Arc;
 use std::sync::Weak;
 use tempfile::TempDir;
@@ -137,12 +138,156 @@ fn list_rejects_an_invalid_cursor() {
 }
 
 #[test]
+fn list_cursor_binds_new_tokens_to_their_statuses_filter() {
+    let snapshots = vec![
+        snapshot(
+            "wf_running",
+            /*started_at*/ 3,
+            WorkflowTaskStatus::Running,
+        ),
+        snapshot(
+            "wf_completed",
+            /*started_at*/ 2,
+            WorkflowTaskStatus::Completed,
+        ),
+        snapshot(
+            "wf_completed_old",
+            /*started_at*/ 1,
+            WorkflowTaskStatus::Completed,
+        ),
+    ];
+    let output = list_workflows_output(
+        snapshots.clone(),
+        ListWorkflowsArgs {
+            limit: Some(1),
+            statuses: Some(vec![WorkflowTaskStatus::Completed]),
+            cursor: None,
+        },
+    )
+    .unwrap();
+    let cursor = output.next_cursor.expect("filtered list should continue");
+    assert_eq!(
+        decode_list_cursor(&cursor).unwrap().statuses,
+        Some(vec![WorkflowTaskStatus::Completed])
+    );
+
+    let error = list_workflows_output(
+        snapshots.clone(),
+        ListWorkflowsArgs {
+            limit: Some(1),
+            statuses: Some(vec![WorkflowTaskStatus::Running]),
+            cursor: Some(cursor.clone()),
+        },
+    )
+    .unwrap_err();
+    assert_eq!(error, "list cursor belongs to a different statuses filter");
+
+    list_workflows_output(
+        snapshots.clone(),
+        ListWorkflowsArgs {
+            limit: Some(1),
+            statuses: Some(vec![
+                WorkflowTaskStatus::Completed,
+                WorkflowTaskStatus::Completed,
+            ]),
+            cursor: Some(cursor),
+        },
+    )
+    .unwrap();
+
+    let two_status = list_workflows_output(
+        snapshots.clone(),
+        ListWorkflowsArgs {
+            limit: Some(1),
+            statuses: Some(vec![
+                WorkflowTaskStatus::Completed,
+                WorkflowTaskStatus::Running,
+            ]),
+            cursor: None,
+        },
+    )
+    .unwrap();
+    let two_status_cursor = two_status
+        .next_cursor
+        .expect("two-status list should continue");
+    list_workflows_output(
+        snapshots.clone(),
+        ListWorkflowsArgs {
+            limit: Some(1),
+            statuses: Some(vec![
+                WorkflowTaskStatus::Running,
+                WorkflowTaskStatus::Completed,
+            ]),
+            cursor: Some(two_status_cursor),
+        },
+    )
+    .unwrap();
+
+    let omitted = list_workflows_output(
+        snapshots,
+        ListWorkflowsArgs {
+            limit: Some(1),
+            statuses: None,
+            cursor: None,
+        },
+    )
+    .unwrap();
+    let full_cursor = omitted
+        .next_cursor
+        .expect("unfiltered list should continue");
+    list_workflows_output(
+        Vec::new(),
+        ListWorkflowsArgs {
+            limit: Some(1),
+            statuses: Some(WORKFLOW_STATUSES.to_vec()),
+            cursor: Some(full_cursor),
+        },
+    )
+    .unwrap();
+
+    let legacy_cursor = serde_json::to_string(&json!({"sequence": 1})).unwrap();
+    list_workflows_output(
+        Vec::new(),
+        ListWorkflowsArgs {
+            limit: Some(1),
+            statuses: Some(vec![WorkflowTaskStatus::Completed]),
+            cursor: Some(legacy_cursor),
+        },
+    )
+    .unwrap();
+
+    let explicit_all = WORKFLOW_STATUSES.to_vec();
+    assert_eq!(
+        canonical_statuses(&explicit_all),
+        Vec::<WorkflowTaskStatus>::new()
+    );
+    assert_eq!(
+        canonical_statuses(&[
+            WorkflowTaskStatus::Killed,
+            WorkflowTaskStatus::Failed,
+            WorkflowTaskStatus::Killed,
+        ]),
+        vec![WorkflowTaskStatus::Failed, WorkflowTaskStatus::Killed]
+    );
+}
+
+#[test]
 fn collections_reject_empty_duplicate_and_oversized_inputs() {
     assert!(validate_run_ids(&[]).is_err());
     assert!(validate_run_ids(&["wf_1".to_string(), "wf_1".to_string()]).is_err());
+    assert!(validate_run_ids(&["w".repeat(129)]).is_err());
+    assert!(validate_run_ids(&["w".repeat(128)]).is_ok());
     assert!(
         validate_run_ids(
-            &(0..=MAX_WORKFLOW_COLLECTION_ITEMS)
+            &(0..MAX_WAIT_WORKFLOW_ITEMS)
+                .map(|index| format!("wf_{index}"))
+                .collect::<Vec<_>>()
+        )
+        .is_ok()
+    );
+    assert!(
+        validate_run_ids(
+            &(0..=MAX_WAIT_WORKFLOW_ITEMS)
                 .map(|index| format!("wf_{index}"))
                 .collect::<Vec<_>>()
         )
@@ -235,12 +380,18 @@ async fn wait_all_uses_one_shared_deadline_and_preserves_input_order() {
                     status: WorkflowTaskStatus::Running,
                     timed_out: true,
                     result_available: false,
+                    result_bytes: None,
+                    result_sha256: None,
+                    recovery: waited_recovery("running", false),
                 },
                 WaitedWorkflowStatus {
                     run_id: first_run_id.clone(),
                     status: WorkflowTaskStatus::Running,
                     timed_out: true,
                     result_available: false,
+                    result_bytes: None,
+                    result_sha256: None,
+                    recovery: waited_recovery("running", false),
                 },
             ],
         }
@@ -301,6 +452,11 @@ async fn wait_any_returns_the_first_terminal_run_without_waiting_for_siblings() 
                 status: WorkflowTaskStatus::Killed,
                 timed_out: false,
                 result_available: true,
+                result_bytes: Some(4),
+                result_sha256: Some(
+                    "74234e98afe7498fb5daf1f36ac2d78acc339464f950703b8c019892f982b90b".to_string(),
+                ),
+                recovery: waited_recovery("killed", true),
             }],
         }
     );
@@ -470,14 +626,26 @@ fn paused_is_terminal_for_waits_without_exposing_a_result() {
 
 #[test]
 fn maximum_multi_workflow_outputs_stay_within_the_hard_bound() {
-    let outcomes = (0..MAX_WORKFLOW_COLLECTION_ITEMS)
-        .map(|index| WorkflowWaitOutcome {
-            snapshot: snapshot(
+    let outcomes = (0..MAX_WAIT_WORKFLOW_ITEMS)
+        .map(|index| {
+            let mut snapshot = snapshot(
                 &format!("wf_{index:02}"),
                 i64::try_from(index).unwrap(),
-                WorkflowTaskStatus::Running,
-            ),
-            timed_out: true,
+                WorkflowTaskStatus::Killed,
+            );
+            snapshot.result_artifact = Some(crate::result_artifact::WorkflowResultArtifact {
+                sha256: "0".repeat(64),
+                bytes: 1_234,
+                storage_id: "1".repeat(32),
+            });
+            snapshot.error = Some(
+                "script content changed; workflow arguments changed; declared inputs changed; workflow execution identity changed; failed to restore frozen child workflow composition"
+                    .to_string(),
+            );
+            WorkflowWaitOutcome {
+                snapshot,
+                timed_out: true,
+            }
         })
         .collect();
 
@@ -488,8 +656,30 @@ fn maximum_multi_workflow_outputs_stay_within_the_hard_bound() {
         /*interrupted_by_user_input*/ false,
     );
 
-    assert_eq!(output.workflows.len(), MAX_WORKFLOW_COLLECTION_ITEMS);
+    assert_eq!(output.workflows.len(), MAX_WAIT_WORKFLOW_ITEMS);
+    assert!(
+        output
+            .workflows
+            .iter()
+            .all(|workflow| workflow.recovery.as_ref().is_some())
+    );
+    assert!(output.workflows.iter().all(|workflow| {
+        workflow.result_available
+            && workflow.result_bytes == Some(1_234)
+            && workflow.result_sha256.as_deref() == Some("0".repeat(64).as_str())
+            && workflow.recovery.as_ref().is_some_and(|recovery| {
+                serde_json::to_value(recovery).unwrap()["observedRestoreIncompatibilities"]
+                    .as_array()
+                    .is_some_and(|incompatibilities| incompatibilities.len() == 5)
+            })
+    }));
     assert!(serde_json::to_vec(&output).unwrap().len() <= MODEL_TOOL_OUTPUT_MAX_BYTES);
+    let ToolSpec::Function(spec) = wait_workflows_tool_spec() else {
+        panic!("WaitWorkflows should be a function tool");
+    };
+    let schema = spec.output_schema.expect("WaitWorkflows output schema");
+    let validator = jsonschema::validator_for(&schema).unwrap();
+    assert!(validator.is_valid(&serde_json::to_value(output).unwrap()));
 }
 
 #[tokio::test]
@@ -507,11 +697,12 @@ async fn specs_describe_server_sized_pages_without_capacity_values() {
     let ToolSpec::Function(agent_list_spec) = list_workflow_agents_tool_spec() else {
         panic!("ListWorkflowAgents should be a function tool");
     };
-    let ToolSpec::Function(wait_spec) = wait_workflows_tool_spec(&config) else {
+    let ToolSpec::Function(wait_spec) = wait_workflows_tool_spec() else {
         panic!("WaitWorkflows should be a function tool");
     };
 
     assert_eq!(list_spec.name, LIST_WORKFLOWS_TOOL_NAME);
+    assert!(list_spec.output_schema.is_some());
     let list_properties = list_spec.parameters.properties.unwrap();
     let limit_description = list_properties["limit"].description.as_deref().unwrap();
     assert!(limit_description.contains("server-sized list page"));
@@ -530,6 +721,49 @@ async fn specs_describe_server_sized_pages_without_capacity_values() {
     let timeout_description = wait_properties["timeoutMs"].description.as_deref().unwrap();
     assert!(timeout_description.contains("configured default"));
     assert!(!timeout_description.contains("123"));
+}
+
+#[test]
+fn status_metadata_exposes_verified_result_size_and_digest() {
+    let mut completed = snapshot(
+        "wf_result",
+        /*started_at*/ 1,
+        WorkflowTaskStatus::Completed,
+    );
+    completed.result_artifact = Some(crate::result_artifact::WorkflowResultArtifact {
+        sha256: "0".repeat(64),
+        bytes: 1234,
+        storage_id: "1".repeat(32),
+    });
+
+    let status = WorkflowStatusItem::from_snapshot(&completed);
+    let waited = wait_workflows_output(
+        WaitMode::All,
+        vec![WorkflowWaitOutcome {
+            snapshot: completed,
+            timed_out: false,
+        }],
+        /*timeout_ms*/ 100,
+        /*interrupted_by_user_input*/ false,
+    );
+
+    assert_eq!(status.result_available, true);
+    assert_eq!(status.result_bytes, Some(1234));
+    assert_eq!(
+        status.result_sha256.as_deref(),
+        Some("0".repeat(64).as_str())
+    );
+    assert_eq!(waited.workflows[0].result_bytes, Some(1234));
+    assert_eq!(
+        waited.workflows[0].result_sha256.as_deref(),
+        Some("0".repeat(64).as_str())
+    );
+
+    let missing_artifact = snapshot("wf_missing_result", 2, WorkflowTaskStatus::Completed);
+    let missing = WorkflowStatusItem::from_snapshot(&missing_artifact);
+    assert_eq!(missing.result_available, false);
+    assert_eq!(missing.result_bytes, None);
+    assert_eq!(missing.result_sha256, None);
 }
 
 #[test]
@@ -626,6 +860,12 @@ fn list_truncates_the_collection_before_the_model_output_limit() {
 
     assert!(output.truncated);
     assert!(serde_json::to_vec(&output).unwrap().len() <= MODEL_TOOL_OUTPUT_MAX_BYTES);
+    let ToolSpec::Function(spec) = list_workflows_tool_spec() else {
+        panic!("ListWorkflows should be a function tool");
+    };
+    let schema = spec.output_schema.expect("ListWorkflows output schema");
+    let validator = jsonschema::validator_for(&schema).unwrap();
+    assert!(validator.is_valid(&serde_json::to_value(output).unwrap()));
 }
 
 #[test]
@@ -705,6 +945,19 @@ impl TurnActivitySubscription for ControlledTurnActivity {
             }
         })
     }
+}
+
+fn waited_recovery(
+    reason: &'static str,
+    recovery_eligible: bool,
+) -> Option<WorkflowRecoverySummary> {
+    recovery_eligible.then(|| {
+        let status = match reason {
+            "killed" => WorkflowTaskStatus::Killed,
+            _ => WorkflowTaskStatus::Failed,
+        };
+        workflow_recovery_status(&snapshot("wf_recovery-summary", 1, status)).into_summary()
+    })
 }
 
 struct ActivityEmitter {
