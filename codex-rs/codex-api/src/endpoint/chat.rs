@@ -1,6 +1,7 @@
 use crate::auth::SharedAuthProvider;
 use crate::common::ResponseStream;
 use crate::common::ResponsesApiRequest;
+use crate::endpoint::chat_body;
 use crate::endpoint::session::EndpointSession;
 use crate::error::ApiError;
 use crate::provider::Provider;
@@ -77,6 +78,13 @@ struct ChatCompletionsRequest {
     tool_choice: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     parallel_tool_calls: Option<bool>,
+    /// Reasoning strength, projected onto the vocabulary chat providers accept.
+    ///
+    /// Omitted when the effort has no chat-wire meaning; see
+    /// `chat_body::chat_wire_reasoning_effort`. A model catalog can override or remove it
+    /// through `extra_body`, which is merged over this body.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    reasoning_effort: Option<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -245,8 +253,11 @@ impl<T: HttpTransport> ChatClient<T> {
         } = options;
 
         let mut request_body = chat_body_from_responses_request(request)?;
-        merge_extra_body(&mut request_body.body, &self.session.provider().extra_body)?;
-        merge_extra_body(&mut request_body.body, &request_body.extra_body)?;
+        chat_body::finalize_chat_body(
+            &mut request_body.body,
+            &self.session.provider().extra_body,
+            &request_body.extra_body,
+        )?;
 
         let mut headers = extra_headers;
         if let Some(ref thread_id) = thread_id {
@@ -324,40 +335,6 @@ impl<T: HttpTransport> ChatClient<T> {
     }
 }
 
-fn merge_extra_body(
-    body: &mut Value,
-    extra_body: &std::collections::HashMap<String, Value>,
-) -> Result<(), ApiError> {
-    if extra_body.is_empty() {
-        return Ok(());
-    }
-    let Some(body) = body.as_object_mut() else {
-        return Ok(());
-    };
-    for (key, value) in extra_body {
-        if key == "stream_options" {
-            let Some(base_stream_options) = body
-                .get_mut("stream_options")
-                .and_then(Value::as_object_mut)
-            else {
-                continue;
-            };
-            let Some(extra_stream_options) = value.as_object() else {
-                return Err(ApiError::Stream(
-                    "extra_body.stream_options must be an object".to_string(),
-                ));
-            };
-            for (option_key, option_value) in extra_stream_options {
-                base_stream_options.insert(option_key.clone(), option_value.clone());
-            }
-            base_stream_options.insert("include_usage".to_string(), Value::Bool(true));
-        } else {
-            body.insert(key.clone(), value.clone());
-        }
-    }
-    Ok(())
-}
-
 fn chat_body_from_responses_request(
     request: ResponsesApiRequest,
 ) -> Result<ChatRequestBody, ApiError> {
@@ -372,6 +349,7 @@ fn chat_body_from_responses_request(
     )?;
     let has_tools = !tools.is_empty();
     let extra_body = request.extra_body;
+    let reasoning_effort = chat_body::chat_wire_reasoning_effort(request.reasoning.as_ref());
     let request = ChatCompletionsRequest {
         model: request.model,
         messages: chat_messages_from_items(&request.instructions, request.input)?,
@@ -383,6 +361,7 @@ fn chat_body_from_responses_request(
         tools,
         tool_choice: has_tools.then_some(request.tool_choice),
         parallel_tool_calls: has_tools.then_some(request.parallel_tool_calls),
+        reasoning_effort,
     };
     let body = serde_json::to_value(request)
         .map_err(|err| ApiError::Stream(format!("failed to encode chat request: {err}")))?;
@@ -917,8 +896,10 @@ fn insert_tool_name_mapping(
 mod tests {
     use super::*;
     use crate::ResponsesApiTools;
+    use crate::common::Reasoning;
     use crate::common::ResponsesApiRequest;
     use codex_protocol::models::FunctionCallOutputPayload;
+    use codex_protocol::openai_models::ReasoningEffort;
     use pretty_assertions::assert_eq;
     use serde_json::json;
     use serde_json::value::RawValue;
@@ -1586,60 +1567,80 @@ mod tests {
         );
     }
 
-    #[test]
-    fn merges_extra_body_fields() {
-        let mut body = json!({"model": "qwen"});
-        merge_extra_body(
-            &mut body,
-            &std::collections::HashMap::from([
-                ("enable_thinking".to_string(), json!(true)),
-                ("thinking_budget".to_string(), json!(1024)),
-            ]),
-        )
-        .expect("extra body should merge");
-
-        assert_eq!(body["enable_thinking"], true);
-        assert_eq!(body["thinking_budget"], 1024);
+    fn request_with_effort(effort: ReasoningEffort) -> ResponsesApiRequest {
+        let mut request = request(Vec::new(), Vec::new());
+        request.reasoning = Some(Reasoning {
+            effort: Some(effort),
+            summary: None,
+            context: None,
+        });
+        request
     }
 
     #[test]
-    fn merges_stream_options_without_disabling_usage() {
-        let mut body = json!({
-            "model": "qwen",
-            "stream_options": {"include_usage": true}
-        });
-        merge_extra_body(
-            &mut body,
-            &std::collections::HashMap::from([(
-                "stream_options".to_string(),
-                json!({
-                    "include_usage": false,
-                    "provider_option": true
-                }),
-            )]),
+    fn chat_body_carries_only_an_effort_providers_can_read() {
+        let body = body_from(request_with_effort(ReasoningEffort::XHigh));
+        assert_eq!(body[chat_body::REASONING_EFFORT_KEY], json!("high"));
+
+        let body = body_from(request_with_effort(ReasoningEffort::None));
+        assert!(
+            body.get(chat_body::REASONING_EFFORT_KEY).is_none(),
+            "an effort with no chat meaning must be omitted, not sent: {body}"
+        );
+
+        let body = body_from(request(Vec::new(), Vec::new()));
+        assert!(body.get(chat_body::REASONING_EFFORT_KEY).is_none());
+    }
+
+    #[test]
+    fn a_catalog_effort_wins_over_the_projected_one() {
+        // Runs the same sequence `stream_request` does: build the body, then finalize it
+        // with both `extra_body` layers.
+        let mut request = request_with_effort(ReasoningEffort::High);
+        request.extra_body =
+            HashMap::from([(chat_body::REASONING_EFFORT_KEY.to_string(), json!("xhigh"))]);
+        let mut request_body = chat_body_from_responses_request(request).unwrap();
+
+        chat_body::finalize_chat_body(
+            &mut request_body.body,
+            &HashMap::new(),
+            &request_body.extra_body,
         )
-        .expect("extra body should merge");
+        .unwrap();
 
         assert_eq!(
-            body["stream_options"],
-            json!({
-                "include_usage": true,
-                "provider_option": true
-            })
+            request_body.body[chat_body::REASONING_EFFORT_KEY],
+            json!("xhigh"),
+            "a catalog that declares the exact wire value keeps its fidelity"
         );
     }
 
     #[test]
-    fn extra_body_can_override_max_completion_tokens() {
-        let mut body = json!({
-            "model": "test",
-            "max_completion_tokens": DEFAULT_CHAT_MAX_COMPLETION_TOKENS,
-            "stream": true,
-            "stream_options": {"include_usage": true}
-        });
-        let extra = HashMap::from([("max_completion_tokens".to_string(), json!(16384))]);
-        merge_extra_body(&mut body, &extra).expect("merge should succeed");
-        assert_eq!(body["max_completion_tokens"], 16384);
+    fn a_catalog_thinking_budget_drops_the_projected_effort() {
+        let mut request = request_with_effort(ReasoningEffort::High);
+        request.extra_body =
+            HashMap::from([(chat_body::THINKING_BUDGET_KEY.to_string(), json!(262_144))]);
+        let mut request_body = chat_body_from_responses_request(request).unwrap();
+
+        chat_body::finalize_chat_body(
+            &mut request_body.body,
+            &HashMap::new(),
+            &request_body.extra_body,
+        )
+        .unwrap();
+
+        assert!(
+            request_body
+                .body
+                .get(chat_body::REASONING_EFFORT_KEY)
+                .is_none(),
+            "the combination Qwen3.8 rejects must not reach the provider: {}",
+            request_body.body
+        );
+        assert_eq!(
+            request_body.body[chat_body::THINKING_BUDGET_KEY],
+            json!(262_144)
+        );
     }
 
     fn reasoning_item(_id: &str, text: &str) -> ResponseItem {

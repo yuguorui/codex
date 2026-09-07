@@ -1,4 +1,5 @@
 pub(crate) mod chat;
+pub(crate) mod chat_body;
 pub(crate) mod compact;
 pub(crate) mod images;
 pub(crate) mod memories;

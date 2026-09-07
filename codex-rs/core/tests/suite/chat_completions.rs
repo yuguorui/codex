@@ -13,6 +13,7 @@ use codex_protocol::dynamic_tools::DynamicToolNamespaceTool;
 use codex_protocol::dynamic_tools::DynamicToolResponse;
 use codex_protocol::dynamic_tools::DynamicToolSpec;
 use codex_protocol::models::PermissionProfile;
+use codex_protocol::openai_models::ReasoningEffort;
 use codex_protocol::protocol::AskForApproval;
 use codex_protocol::protocol::EventMsg;
 use codex_protocol::protocol::Op;
@@ -108,6 +109,7 @@ async fn chat_wire_api_posts_to_chat_completions_and_merges_extra_body() -> Resu
                     "enable_thinking".to_string(),
                     json!(true),
                 )]));
+                config.model_reasoning_effort = Some(ReasoningEffort::XHigh);
             }
         });
         builder.build(&server).await?
@@ -121,6 +123,9 @@ async fn chat_wire_api_posts_to_chat_completions_and_merges_extra_body() -> Resu
     assert_eq!(body["stream"], true);
     assert_eq!(body["stream_options"], json!({"include_usage": true}));
     assert_eq!(body["enable_thinking"], true);
+    // The configured effort reaches the wire, projected onto the vocabulary chat
+    // providers accept rather than sent as `xhigh`, which several of them reject.
+    assert_eq!(body["reasoning_effort"], json!("high"));
     assert_eq!(body["messages"][0]["role"], "system");
     assert!(
         body["messages"]
@@ -128,6 +133,45 @@ async fn chat_wire_api_posts_to_chat_completions_and_merges_extra_body() -> Resu
             .unwrap()
             .iter()
             .any(|message| message == &json!({"role": "user", "content": "hello"}))
+    );
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn chat_wire_api_thinking_budget_suppresses_the_projected_effort() -> Result<()> {
+    skip_if_no_network!(Ok(()));
+
+    // The provider-level shape documented in the README. Qwen3.8 rejects a request
+    // carrying both `reasoning_effort` and `thinking_budget`, and the budget already
+    // expresses the strength, so the projected effort has to give way.
+    let server = start_mock_server().await;
+    let mock = mount_chat_sse_once(&server, chat_text_response("chatcmpl-1", "done")).await;
+    let test = {
+        let mut builder = test_codex().with_config({
+            let base_url = format!("{}/v1", server.uri());
+            move |config| {
+                config.model_provider.base_url = Some(base_url);
+                config.model_provider.wire_api = WireApi::Chat;
+                config.model_provider.supports_websockets = false;
+                config.model_provider.extra_body = Some(HashMap::from([
+                    ("enable_thinking".to_string(), json!(true)),
+                    ("thinking_budget".to_string(), json!(1024)),
+                ]));
+                config.model_reasoning_effort = Some(ReasoningEffort::XHigh);
+            }
+        });
+        builder.build(&server).await?
+    };
+
+    submit_user_turn(&test, "hello").await?;
+
+    let request = mock.single_request();
+    let body = request.body_json();
+    assert_eq!(body["enable_thinking"], true);
+    assert_eq!(body["thinking_budget"], json!(1024));
+    assert!(
+        body.get("reasoning_effort").is_none(),
+        "the pair Qwen3.8 rejects must not reach the provider: {body}"
     );
     Ok(())
 }
